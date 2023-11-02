@@ -226,9 +226,7 @@ class Redis {
   /// Handle connection reconnect
   Future<void> _reconnect() async {
     if (_shouldReconnect) {
-      await Future<void>.delayed(Duration(
-        milliseconds: option.retryStrategy!(_totalRetry),
-      ));
+      await Future<void>.delayed(option.retryStrategy!(_totalRetry));
       await connect();
     }
   }

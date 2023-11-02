@@ -3,7 +3,7 @@ class RedisOptions {
 
   final bool secure;
 
-  final int Function(int)? retryStrategy;
+  final Duration Function(int)? retryStrategy;
 
   final String? username;
 

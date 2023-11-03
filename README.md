@@ -78,3 +78,10 @@ await redis.mdelete(['key1', 'key2'])
 Redis redis = new Redis();
 await redis.flushdb()
 ```
+
+## Send command
+
+```dart 
+Redis redis = new Redis();
+await redis.sendCommand(['GET', 'key'])
+```

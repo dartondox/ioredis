@@ -170,7 +170,6 @@ class Redis {
   /// ```
   /// await redis.get('foo');
   /// ```
-  ///
   Future<String?> get(String key) async {
     return await sendCommand(<String>['GET', key]);
   }
@@ -179,9 +178,32 @@ class Redis {
   /// ```
   /// await redis.get('foo');
   /// ```
-  ///
   Future<List<String?>> mget(List<String> keys) async {
     return await sendCommand(<String>['MGET', ...keys]);
+  }
+
+  /// Delete a key
+  /// ```
+  /// await redis.get('foo');
+  /// ```
+  Future<void> delete(String key) async {
+    await sendCommand(<String>['DEL', key]);
+  }
+
+  /// Delete multiple key
+  /// ```
+  /// await redis.get('foo');
+  /// ```
+  Future<void> mdelete(List<String> key) async {
+    await sendCommand(<String>['DEL', ...key]);
+  }
+
+  /// Delete multiple key
+  /// ```
+  /// await redis.get('foo');
+  /// ```
+  Future<void> flushdb() async {
+    await sendCommand(<String>['FLUSHDB']);
   }
 
   /// Subscribe to channel

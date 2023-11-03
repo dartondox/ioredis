@@ -7,7 +7,7 @@ void main() {
       expect(defaultRedisOptions.host, '127.0.0.1');
       expect(defaultRedisOptions.port, 6379);
       expect(defaultRedisOptions.connectTimeout, Duration(seconds: 10));
-      expect(defaultRedisOptions.db, 1);
+      expect(defaultRedisOptions.db, 0);
       expect(defaultRedisOptions.secure, false);
 
       Duration Function(int p1)? retryStrategy =

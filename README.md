@@ -19,7 +19,7 @@ Redis redis = new Redis(RedisOptions(host: '127.0.0.1', port: 6379));
 /// Set value
 await redis.set('key', value);
 
-/// Set value with expiry date/time
+/// Set value with expiry time
 await redis.set('key', value, 'EX', 10);
 
 /// Get value
@@ -62,4 +62,26 @@ subscriber.onMessage = (String channel, String? message) {
 }
 
 await pubClient.publish('chat', 'hello');
+```
+
+## Delete
+
+```dart
+Redis redis = new Redis();
+await redis.delete('key')
+await redis.mdelete(['key1', 'key2'])
+```
+
+## Flushdb
+
+```dart
+Redis redis = new Redis();
+await redis.flushdb()
+```
+
+## Send command
+
+```dart 
+Redis redis = new Redis();
+await redis.sendCommand(['GET', 'key'])
 ```

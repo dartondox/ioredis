@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:ioredis/ioredis.dart';
 import 'package:ioredis/src/default.dart';
-import 'package:ioredis/src/protocol_message_encoder.dart';
+import 'package:ioredis/src/redis_message_encoder.dart';
 import 'package:ioredis/src/redis_response.dart';
 import 'package:ioredis/src/transformer.dart';
 
@@ -30,7 +30,7 @@ class Redis {
   Completer<dynamic>? _completer;
 
   /// Serializer to send the command to redis
-  final RedisProtocolSerializer _serializer = RedisProtocolSerializer();
+  final RedisMessageEncoder _encoder = RedisMessageEncoder();
 
   /// Current status of redis connection
   RedisConnectionStatus _status = RedisConnectionStatus.disconnected;
@@ -142,7 +142,7 @@ class Redis {
         await connect();
       }
       _completer = Completer<dynamic>();
-      _socket?.add(_serializer.serialize(commandList));
+      _socket?.add(_encoder.encode(commandList));
       return await _completer?.future;
     } catch (error) {
       print(error.toString());
@@ -226,9 +226,7 @@ class Redis {
   /// Handle connection reconnect
   Future<void> _reconnect() async {
     if (_shouldReconnect) {
-      await Future<void>.delayed(Duration(
-        milliseconds: option.retryStrategy!(_totalRetry),
-      ));
+      await Future<void>.delayed(option.retryStrategy!(_totalRetry));
       await connect();
     }
   }

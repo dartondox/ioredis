@@ -1,14 +1,14 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-class RedisProtocolSerializer {
+class RedisMessageEncoder {
   final Uint8List _semicolon = ascii.encode(':');
   final Uint8List _crlf = ascii.encode('\r\n');
   final Uint8List _star = ascii.encode('*');
   final Uint8List _nullValue = ascii.encode('\$-1');
   final Uint8List _dollar = ascii.encode('\$');
 
-  List<int> serialize(Object? object) {
+  List<int> encode(Object? object) {
     List<int> s = <int>[];
     consume(object, (Iterable<int> v) => s.addAll(v));
     return s;

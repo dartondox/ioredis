@@ -11,7 +11,7 @@ enum RedisResponseConstant {
 }
 
 enum RedisType {
-  both('both'),
+  normal('normal'),
   subscriber('publisher'),
   publisher('publisher');
 

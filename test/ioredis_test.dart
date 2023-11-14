@@ -4,7 +4,22 @@ import 'package:ioredis/ioredis.dart';
 import 'package:test/test.dart';
 
 void main() {
-  group('A group of tests', () {
+  group('Redis |', () {
+    test('race request', () async {
+      Redis redis = Redis();
+
+      await redis.set('key1', 'redis1');
+      await redis.set('key2', 'redis2');
+
+      List<Future<dynamic>> operations = <Future<dynamic>>[
+        redis.get('key1'),
+        redis.get('key2'),
+      ];
+
+      List<dynamic> results = await Future.wait(operations);
+      expect(results.length, 2);
+    });
+
     test('ut8f', () async {
       Redis redis = Redis(RedisOptions(
         port: 8379,

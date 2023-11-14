@@ -141,8 +141,16 @@ class Redis {
       if (_status == RedisConnectionStatus.disconnected) {
         await connect();
       }
-      _completer = Completer<dynamic>();
-      _socket?.add(_encoder.encode(commandList));
+      // for the synchronous operations, execute one after another in a sequential manner
+      // send new command only if the response is completed from redis
+      while (true) {
+        if (_completer == null || _completer?.isCompleted == true) {
+          _completer = Completer<dynamic>();
+          _socket?.add(_encoder.encode(commandList));
+          break;
+        }
+        await Future<void>.delayed(Duration(microseconds: 100));
+      }
       return await _completer?.future;
     } catch (error) {
       print(error.toString());
@@ -303,6 +311,7 @@ class Redis {
       } else {
         if (_completer?.isCompleted == false) {
           _completer?.complete(packet);
+          _completer = null;
         }
       }
     }, onDone: () async {

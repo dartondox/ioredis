@@ -85,3 +85,12 @@ await redis.flushdb()
 Redis redis = new Redis();
 await redis.sendCommand(['GET', 'key'])
 ```
+
+## Using with connection pool
+
+```dart
+Pool pool = Pool(10, timeout: Duration(hours: 1));
+Redis redis = await pool.withResource<Redis>(() => Redis());
+
+await redis.set('key', 'value')
+```

@@ -36,8 +36,8 @@ class Redis {
   RedisConnectionStatus _status = RedisConnectionStatus.disconnected;
 
   /// Redis connection type
-  /// subscriber, publisher or both
-  RedisType _type = RedisType.both;
+  /// subscriber, publisher or normal
+  RedisType _type = RedisType.normal;
 
   /// To check whether it should reconnect
   /// when socket is manually disconnect.
@@ -149,7 +149,7 @@ class Redis {
           _socket?.add(_encoder.encode(commandList));
           break;
         }
-        await Future<void>.delayed(Duration(microseconds: 100));
+        await Future<void>.delayed(Duration(milliseconds: 1));
       }
       return await _completer?.future;
     } catch (error) {

@@ -6,18 +6,47 @@ import 'package:test/test.dart';
 void main() {
   group('Redis |', () {
     test('race request', () async {
-      Redis redis = Redis();
+      Redis redis = Redis(RedisOptions(
+        idleTimeout: Duration(seconds: 3),
+      ));
 
       await redis.set('key1', 'redis1');
       await redis.set('key2', 'redis2');
+      await redis.set('key3', 'redis3');
 
       List<Future<dynamic>> operations = <Future<dynamic>>[
         redis.get('key1'),
         redis.get('key2'),
+        redis.get('key3'),
       ];
 
       List<dynamic> results = await Future.wait(operations);
-      expect(results.length, 2);
+
+      expect(results.first, 'redis1');
+      expect(results.last, 'redis3');
+      expect(results.length, 3);
+    });
+
+    test('keyPrefix', () async {
+      Redis redis = Redis(RedisOptions(keyPrefix: 'dox'));
+
+      await redis.set('foo', 'redis1');
+      String? s1 = await redis.get('key1');
+
+      expect(s1, 'redis1');
+
+      Redis redis2 = Redis();
+      String? s2 = await redis2.get('dox:foo');
+
+      expect(s2, 'redis1');
+
+      expect(s1, s2);
+
+      await redis.delete('foo');
+
+      String? s3 = await redis2.get('dox:foo');
+
+      expect(s3, null);
     });
 
     test('ut8f', () async {
@@ -137,15 +166,6 @@ void main() {
       String? data2 = await redis.get('something');
 
       expect(data2, null);
-    });
-
-    test('response', () {
-      // Redis redis = Redis(option: RedisOptions(host: '127.0.0.1', port: 6379));
-      // print(redis.response('+OK\r\n'));
-      // print(redis.response('-ERR Something went wrong\r\n'));
-      // print(redis.response('\$6\r\nfoobar\r\n'));
-      // print(redis.response(':42\r\n'));
-      // print(redis._response('*3\r\n\$3\r\nfoo\r\n\$3\r\nbar\r\n\$3\r\nbar\r\n'));
     });
   });
 }

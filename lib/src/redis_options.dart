@@ -27,7 +27,21 @@ class RedisOptions {
   /// error handler
   void Function(dynamic)? onError;
 
+  /// key prefix
+  /// ```
+  /// Redis fooRedis = new Redis(RedisOption(keyPrefix: 'foo'));
+  /// fooRedis.set("bar", "baz"); // Actually sends SET foo:bar baz
+  /// ```
+  String keyPrefix;
+
+  /// maximum connection pool, default to 10;
+  int maxConnection;
+
+  /// timeout duration of idle connection in the pool, default to 10s
+  Duration idleTimeout;
+
   RedisOptions({
+    this.keyPrefix = '',
     this.host = '127.0.0.1',
     this.port = 6379,
     this.secure = false,
@@ -37,6 +51,8 @@ class RedisOptions {
     this.db = 0,
     this.retryStrategy,
     this.onError,
+    this.maxConnection = 10,
+    this.idleTimeout = const Duration(seconds: 10),
   });
 }
 

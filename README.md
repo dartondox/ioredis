@@ -5,6 +5,7 @@ Redis client for dart.
 ## Features
 
 - Support Pub/Sub
+- Support pool connection by default
 - Support auto reconnect on failed
 - Support retry strategy
 - Support selectable database
@@ -86,11 +87,9 @@ Redis redis = new Redis();
 await redis.sendCommand(['GET', 'key'])
 ```
 
-## Using with connection pool
+## Pool connection
 
-```dart
-Pool pool = Pool(10, timeout: Duration(hours: 1));
-Redis redis = await pool.withResource<Redis>(() => Redis());
-
-await redis.set('key', 'value')
+```dart 
+Redis redis = new Redis(RedisOptions(maxConnection: 10));
+String? value = await redis.get('key');
 ```

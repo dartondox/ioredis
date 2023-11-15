@@ -21,7 +21,7 @@ enum RedisType {
 
 class RedisResponse {
   static bool ok(String? s) {
-    return s == 'OK';
+    return s == 'OK' || s == '+OK';
   }
 
   static bool isSimpleString(String s) {
@@ -29,7 +29,7 @@ class RedisResponse {
   }
 
   static String? toSimpleString(String s) {
-    String? val = s.substring(1, s.length - 2);
+    String? val = s.substring(1).replaceFirst('\r\n', '');
     if (val.isEmpty) return null;
     return val;
   }
@@ -43,10 +43,25 @@ class RedisResponse {
   static List<String?> toArrayString(String s) {
     List<String> listOfData = s.split('\r\n');
     List<String?> elements = <String?>[];
-    for (int i = 1; i < listOfData.length; i++) {
-      String element = listOfData[i];
-      if (i % 2 == 0) {
-        elements.add(element.isEmpty ? null : element);
+
+    int count = int.parse(listOfData[0].substring(1));
+    int currentIndex = 0;
+    int i = 0;
+
+    String type = '';
+
+    while (currentIndex < count) {
+      i++;
+      String element = '$type${listOfData[i]}';
+      if (type.isEmpty && (isBulkString(element))) {
+        type = '$element\r\n';
+      } else if (type.isNotEmpty) {
+        elements.add(transform(element));
+        type = '';
+        currentIndex++;
+      } else {
+        elements.add(transform(element));
+        currentIndex++;
       }
     }
     return elements;
@@ -74,16 +89,18 @@ class RedisResponse {
 
   static dynamic transform(String? s) {
     if (s == null) return null;
-    if (RedisResponse.isSimpleString(s)) {
-      return RedisResponse.toSimpleString(s);
-    } else if (RedisResponse.isError(s)) {
-      return RedisResponse.toSimpleString(s);
-    } else if (RedisResponse.isInteger(s)) {
-      return RedisResponse.toSimpleString(s);
-    } else if (RedisResponse.isBulkString(s)) {
-      return RedisResponse.toBulkString(s);
-    } else if (RedisResponse.isArray(s)) {
-      return RedisResponse.toArrayString(s);
+    if (ok(s)) {
+      return 'OK';
+    } else if (isSimpleString(s)) {
+      return toSimpleString(s);
+    } else if (isError(s)) {
+      return toSimpleString(s);
+    } else if (isInteger(s)) {
+      return toSimpleString(s);
+    } else if (isBulkString(s)) {
+      return toBulkString(s);
+    } else if (isArray(s)) {
+      return toArrayString(s);
     }
     return null;
   }

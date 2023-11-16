@@ -93,3 +93,17 @@ await redis.sendCommand(['GET', 'key'])
 Redis redis = new Redis(RedisOptions(maxConnection: 10));
 String? value = await redis.get('key');
 ```
+
+## Pipelining
+
+```dart
+Redis redis = new Redis();
+List<dynamic> result = await redis.multi()
+    .set('key', 'value')
+    .set('key2', 'value2')
+    .get('key')
+    .get('key2')
+    .exec()
+
+// result => ['OK', 'OK', 'value', 'value2']
+```

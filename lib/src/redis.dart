@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:ioredis/ioredis.dart';
 import 'package:ioredis/src/default.dart';
 import 'package:ioredis/src/redis_connection_pool.dart';
+import 'package:ioredis/src/redis_multi_command.dart';
 import 'package:ioredis/src/redis_response.dart';
 
 class Redis {
@@ -54,15 +55,8 @@ class Redis {
   /// ```
   Future<dynamic> set(String key, String value,
       [String? option, dynamic optionValue]) async {
-    List<String> commands = <String>[
-      'SET',
-      _setPrefixInKeys(<String>[key]).first,
-      value.toString()
-    ];
-    if (option != null && optionValue != null) {
-      commands.addAll(<String>[option.toUpperCase(), optionValue.toString()]);
-    }
-    String? val = await sendCommand(commands);
+    String? val =
+        await sendCommand(getCommandToSetData(key, value, option, optionValue));
     if (!RedisResponse.ok(val)) {
       throw Exception(val);
     }
@@ -73,10 +67,7 @@ class Redis {
   /// await redis.get('foo');
   /// ```
   Future<String?> get(String key) async {
-    return await sendCommand(<String>[
-      'GET',
-      _setPrefixInKeys(<String>[key]).first
-    ]);
+    return await sendCommand(getCommandToGetData(key));
   }
 
   /// Get value of a key
@@ -112,6 +103,19 @@ class Redis {
   /// ```
   Future<void> flushdb() async {
     await sendCommand(<String>['FLUSHDB']);
+  }
+
+  /// multi commands
+  /// ```
+  /// List<dynamic> result = await redis.multi()
+  ///      .set('foo', 'bar')
+  ///      .set('bar', 'foo')
+  ///      .get('foo')
+  ///      .get('bar')
+  ///      .exec();
+  /// ```
+  RedisMulti multi() {
+    return RedisMulti(this);
   }
 
   /// Subscribe to channel
@@ -159,6 +163,29 @@ class Redis {
       return connection.sendCommand(commandList);
     }
     return pool.sendCommand(commandList);
+  }
+
+  /// get command to set data to redis
+  List<String> getCommandToSetData(String key, String value,
+      [String? option, dynamic optionValue]) {
+    List<String> command = <String>[
+      'SET',
+      _setPrefixInKeys(<String>[key]).first,
+      value.toString()
+    ];
+    if (option != null && optionValue != null) {
+      command.addAll(<String>[option.toUpperCase(), optionValue.toString()]);
+    }
+    return command;
+  }
+
+  /// get command to get data from redis
+  List<String> getCommandToGetData(String key) {
+    List<String> command = <String>[
+      'GET',
+      _setPrefixInKeys(<String>[key]).first
+    ];
+    return command;
   }
 
   /// setting keys prefix before setting or getting values

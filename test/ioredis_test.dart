@@ -58,6 +58,19 @@ void main() {
       expect(data, 'မင်္ဂလာပါ');
     });
 
+    test('multi', () async {
+      Redis redis = Redis();
+      List<dynamic> result = await redis
+          .multi()
+          .set('foo', 'bar')
+          .set('bar', 'foo')
+          .get('foo')
+          .get('bar')
+          .exec();
+
+      expect(<String>['OK', 'OK', 'bar', 'foo'], result);
+    });
+
     test('custom socket', () async {
       Redis redis = Redis();
       redis.setSocket(await Socket.connect('127.0.0.1', 6379));

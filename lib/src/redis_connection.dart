@@ -120,7 +120,7 @@ class RedisConnection {
 
     _stream?.listen((dynamic packet) {
       /// If packet is from pub/sub
-      if (packet is List && packet[0] == 'message') {
+      if (packet is List && packet.isNotEmpty && packet[0] == 'message') {
         String channel = packet[1];
         String message = packet[2];
         RedisSubscriber? cb = _findSubscribeListener(channel);

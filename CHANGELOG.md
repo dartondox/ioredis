@@ -1,3 +1,7 @@
+## 1.0.3
+
+- Add onBadCertificate field and improve code consistency
+
 ## 1.0.2
 
 - Add support for pool connections

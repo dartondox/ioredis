@@ -11,12 +11,9 @@ enum RedisResponseConstant {
 }
 
 enum RedisType {
-  normal('normal'),
-  subscriber('publisher'),
-  publisher('publisher');
-
-  final String name;
-  const RedisType(this.name);
+  normal,
+  subscriber,
+  publisher,
 }
 
 class RedisResponse {

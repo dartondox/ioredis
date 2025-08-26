@@ -1,3 +1,5 @@
+import 'dart:io';
+
 class RedisOptions {
   /// timeout value for socket connection
   final Duration connectTimeout;
@@ -40,6 +42,18 @@ class RedisOptions {
   /// timeout duration of idle connection in the pool, default to 10s
   Duration idleTimeout;
 
+  /// An optional callback for handling server SSL certificate validation.
+  ///
+  /// This function is invoked if the server presents a certificate that is
+  /// considered invalid or untrusted by the system.
+  ///
+  /// The function must return `true` to accept the certificate and continue
+  /// the connection, or `false` to reject it and abort the connection attempt.
+  ///
+  /// If this callback is `null`, any invalid certificate will automatically
+  /// cause the connection to be aborted.
+  bool Function(X509Certificate)? onBadCertificate;
+
   RedisOptions({
     this.keyPrefix = '',
     this.host = '127.0.0.1',
@@ -53,6 +67,7 @@ class RedisOptions {
     this.onError,
     this.maxConnection = 10,
     this.idleTimeout = const Duration(seconds: 10),
+    this.onBadCertificate,
   });
 }
 

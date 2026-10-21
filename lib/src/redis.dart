@@ -4,13 +4,131 @@ import 'dart:io';
 import 'package:ioredis/ioredis.dart';
 import 'package:ioredis/src/default.dart';
 import 'package:ioredis/src/redis_connection_pool.dart';
-import 'package:ioredis/src/redis_multi_command.dart';
 import 'package:ioredis/src/redis_response.dart';
 
-class Redis {
+part 'commands/key_commands.dart';
+part 'commands/string_commands.dart';
+part 'commands/hash_commands.dart';
+part 'commands/list_commands.dart';
+part 'commands/set_commands.dart';
+part 'commands/sorted_set_commands.dart';
+part 'commands/server_commands.dart';
+part 'redis_multi_command.dart';
+
+/// Result of SCAN, HSCAN, SSCAN and ZSCAN.
+/// [cursor] is '0' when the scan is done.
+/// [items] is a flat list (field, value, ... for HSCAN and member, score, ... for ZSCAN).
+typedef RedisScanResult = ({String cursor, List<String> items});
+
+/// Shared helpers for the command mixins.
+abstract class _RedisBase {
+  RedisOptions get option;
+
+  /// send command to connection
+  Future<dynamic> sendCommand(List<String> commandList);
+
+  /// add the key prefix to one key
+  String _key(String key) =>
+      option.keyPrefix.isNotEmpty ? '${option.keyPrefix}:$key' : key;
+
+  /// add the key prefix to one key or a list of keys
+  List<String> _keys(Object keys) => _args(keys).map(_key).toList();
+
+  /// one value or a list of values to a list of strings
+  List<String> _args(Object? values) {
+    if (values is Iterable) {
+      return values.map((dynamic v) => v.toString()).toList();
+    }
+    return <String>[values.toString()];
+  }
+
+  /// get command to set data to redis
+  List<String> getCommandToSetData(
+    String key,
+    Object value, [
+    String? option,
+    dynamic optionValue,
+    String? flag,
+  ]) {
+    List<String> command = <String>['SET', _key(key), value.toString()];
+    if (option != null) command.add(option.toUpperCase());
+    if (optionValue != null) command.add(optionValue.toString());
+    if (flag != null) command.add(flag.toUpperCase());
+    return command;
+  }
+
+  /// get command to get data from redis
+  List<String> getCommandToGetData(String key) {
+    return <String>['GET', _key(key)];
+  }
+
+  List<String> _zaddCommand(
+    String key,
+    Map<String, num> members, {
+    bool nx = false,
+    bool xx = false,
+    bool gt = false,
+    bool lt = false,
+    bool ch = false,
+  }) {
+    List<String> command = <String>['ZADD', _key(key)];
+    if (nx) command.add('NX');
+    if (xx) command.add('XX');
+    if (gt) command.add('GT');
+    if (lt) command.add('LT');
+    if (ch) command.add('CH');
+    members.forEach((String member, num score) {
+      command.addAll(<String>[score.toString(), member]);
+    });
+    return command;
+  }
+
+  List<String> _scanOptions({String? match, int? count, String? type}) {
+    return <String>[
+      if (match != null) ...<String>['MATCH', match],
+      if (count != null) ...<String>['COUNT', count.toString()],
+      if (type != null) ...<String>['TYPE', type],
+    ];
+  }
+
+  RedisScanResult _toScanResult(dynamic reply) {
+    List<dynamic> list = reply as List<dynamic>;
+    return (cursor: list[0] as String, items: List<String>.from(list[1]));
+  }
+
+  List<String> _toStrings(dynamic reply) =>
+      reply == null ? <String>[] : List<String>.from(reply);
+
+  /// Redis sends floats as strings, also 'inf' and '-inf'.
+  double _toDouble(String value) {
+    switch (value) {
+      case 'inf':
+      case '+inf':
+        return double.infinity;
+      case '-inf':
+        return double.negativeInfinity;
+    }
+    return double.parse(value);
+  }
+}
+
+class Redis extends _RedisBase
+    with
+        _KeyCommands,
+        _StringCommands,
+        _HashCommands,
+        _ListCommands,
+        _SetCommands,
+        _SortedSetCommands,
+        _ServerCommands {
   late RedisConnection connection;
 
-  late RedisOptions option = defaultRedisOptions;
+  @override
+
+  /// Own copy of the default options, so select() on one client
+  /// does not change other clients.
+  late RedisOptions option =
+      RedisOptions(retryStrategy: defaultRedisOptions.retryStrategy);
 
   late RedisConnectionPool pool;
 
@@ -49,73 +167,75 @@ class Redis {
     return Redis(option);
   }
 
-  /// Set key value to redis
+  /// Send QUIT, then close the connection and the pool connections.
   /// ```
-  /// await redis.set('foo', 'bar');
+  /// await redis.quit();
   /// ```
-  Future<dynamic> set(String key, String value,
-      [String? option, dynamic optionValue]) async {
-    String? val =
-        await sendCommand(getCommandToSetData(key, value, option, optionValue));
-    if (!RedisResponse.ok(val)) {
-      throw Exception(val);
+  Future<String> quit() async {
+    pool.destroyAll();
+    return await connection.quit();
+  }
+
+  /// Change the database for this client. All open connections switch,
+  /// and new pool connections use it too.
+  /// Note: it changes `option.db`, so a client made with [duplicate]
+  /// (which shares the options) also uses it for new connections.
+  /// ```
+  /// await redis.select(1);
+  /// ```
+  Future<String> select(int db) async {
+    option.db = db;
+    List<RedisConnection> open =
+        <RedisConnection>[connection, ...pool.connections]
+            .where(
+              (RedisConnection c) =>
+                  c.status == RedisConnectionStatus.connected,
+            )
+            .toList();
+    for (RedisConnection c in open) {
+      await c.sendCommand(<String>['SELECT', '$db']);
     }
+    return 'OK';
   }
 
-  /// Get value of a key
+  /// Send any command. Arguments are sent as they are.
+  /// The key prefix is NOT added. Error replies throw [RedisError].
   /// ```
-  /// await redis.get('foo');
+  /// await redis.call('GEOADD', ['places', 13.361389, 38.115556, 'Palermo']);
+  /// String? v = await redis.call('GET', ['foo']);
   /// ```
-  Future<String?> get(String key) async {
-    return await sendCommand(getCommandToGetData(key));
+  Future<dynamic> call(
+    String command, [
+    List<Object> args = const <Object>[],
+  ]) async {
+    return await sendCommand(<String>[command, ..._args(args)]);
   }
 
-  /// Get value of a key
-  /// ```
-  /// await redis.get('foo');
-  /// ```
-  Future<List<String?>> mget(List<String> keys) async {
-    return await sendCommand(<String>['MGET', ..._setPrefixInKeys(keys)]);
-  }
-
-  /// Delete a key
-  /// ```
-  /// await redis.get('foo');
-  /// ```
-  Future<void> delete(String key) async {
-    await sendCommand(<String>[
-      'DEL',
-      _setPrefixInKeys(<String>[key]).first
-    ]);
-  }
-
-  /// Delete multiple key
-  /// ```
-  /// await redis.get('foo');
-  /// ```
-  Future<void> mdelete(List<String> keys) async {
-    await sendCommand(<String>['DEL', ..._setPrefixInKeys(keys)]);
-  }
-
-  /// flush all they data from currently selected DB
-  /// ```
-  /// await redis.flushdb();
-  /// ```
-  Future<void> flushdb() async {
-    await sendCommand(<String>['FLUSHDB']);
-  }
-
-  /// multi commands
+  /// multi commands. All commands run on one connection inside MULTI/EXEC.
+  /// Returns the EXEC result. A command that failed inside the transaction
+  /// is a [RedisError] item in the result.
   /// ```
   /// List<dynamic> result = await redis.multi()
   ///      .set('foo', 'bar')
-  ///      .set('bar', 'foo')
-  ///      .get('foo')
-  ///      .get('bar')
+  ///      .incr('counter')
+  ///      .call('HSET', ['hash', 'f', 'v'])
   ///      .exec();
   /// ```
   RedisMulti multi() {
     return RedisMulti(this);
+  }
+
+  /// Pipeline. Queue commands, then send them all in one write on one
+  /// connection. Results come back in the same order.
+  /// A failed command is a [RedisError] item in the result.
+  /// ```
+  /// List<dynamic> result = await redis.pipeline()
+  ///      .set('foo', 'bar')
+  ///      .get('foo')
+  ///      .exec();
+  /// ```
+  RedisPipeline pipeline() {
+    return RedisPipeline(this);
   }
 
   /// Subscribe to channel
@@ -131,68 +251,116 @@ class Redis {
     if (redisClientType == RedisType.publisher) {
       throw Exception('cannot subscribe and publish on same connection');
     }
-    redisClientType = RedisType.subscriber;
-    RedisSubscriber cb = RedisSubscriber();
+    List<String> channels;
     if (channel is String) {
-      await sendCommand(<String>['SUBSCRIBE', channel]);
-      connection.subscribeListeners[<String>[channel]] = cb;
+      channels = <String>[channel];
     } else if (channel is List<String>) {
-      await sendCommand(<String>['SUBSCRIBE', ...channel]);
-      connection.subscribeListeners[channel] = cb;
+      channels = channel;
     } else {
       throw Exception('Invalid type for channel');
     }
+    redisClientType = RedisType.subscriber;
+    RedisSubscriber cb = RedisSubscriber();
+    // add the listener first, so no message is lost
+    connection.subscribeListeners[channels] = cb;
+    await sendCommand(<String>['SUBSCRIBE', ...channels]);
     return cb;
   }
 
-  /// Publish message to a channel
+  /// Subscribe to channels by pattern
+  /// ```
+  /// RedisSubscriber sub = await redis.psubscribe('news.*');
+  /// sub.onPatternMessage = (String pattern, String channel, String? message) {
+  ///   print('$channel: $message');
+  /// };
+  /// ```
+  Future<RedisSubscriber> psubscribe(Object pattern) async {
+    if (redisClientType == RedisType.publisher) {
+      throw Exception('cannot subscribe and publish on same connection');
+    }
+    List<String> patterns = _args(pattern);
+    redisClientType = RedisType.subscriber;
+    RedisSubscriber cb = RedisSubscriber();
+    for (String p in patterns) {
+      connection.patternListeners[p] = cb;
+    }
+    await sendCommand(<String>['PSUBSCRIBE', ...patterns]);
+    return cb;
+  }
+
+  /// Unsubscribe from channels. Without channels, unsubscribe from all.
+  /// ```
+  /// await redis.unsubscribe('chat');
+  /// await redis.unsubscribe();
+  /// ```
+  Future<void> unsubscribe([Object? channel]) async {
+    List<String> channels = channel == null
+        ? connection.subscribeListeners.keys
+            .expand((List<String> c) => c)
+            .toList()
+        : _args(channel);
+    await sendCommand(<String>['UNSUBSCRIBE', ...channels]);
+
+    Map<List<String>, RedisSubscriber> listeners =
+        Map<List<String>, RedisSubscriber>.of(connection.subscribeListeners);
+    connection.subscribeListeners.clear();
+    listeners.forEach((List<String> key, RedisSubscriber cb) {
+      List<String> left =
+          key.where((String c) => !channels.contains(c)).toList();
+      if (left.isNotEmpty) connection.subscribeListeners[left] = cb;
+    });
+    _resetClientTypeIfNoSubscription();
+  }
+
+  /// Unsubscribe from patterns. Without patterns, unsubscribe from all.
+  /// ```
+  /// await redis.punsubscribe('news.*');
+  /// ```
+  Future<void> punsubscribe([Object? pattern]) async {
+    List<String> patterns = pattern == null
+        ? connection.patternListeners.keys.toList()
+        : _args(pattern);
+    await sendCommand(<String>['PUNSUBSCRIBE', ...patterns]);
+    for (String p in patterns) {
+      connection.patternListeners.remove(p);
+    }
+    _resetClientTypeIfNoSubscription();
+  }
+
+  void _resetClientTypeIfNoSubscription() {
+    if (connection.subscribeListeners.isEmpty &&
+        connection.patternListeners.isEmpty) {
+      redisClientType = RedisType.normal;
+    }
+  }
+
+  /// Publish message to a channel. Returns how many clients got it.
   /// ```
   /// await redis.publish('chat', 'hello')
   /// ```
-  Future<void> publish(String channel, String message) async {
+  Future<int> publish(String channel, String message) async {
     if (redisClientType == RedisType.subscriber) {
       throw Exception('cannot subscribe and publish on same connection');
     }
     redisClientType = RedisType.publisher;
-    await sendCommand(<String>['PUBLISH', channel, message]);
+    return await sendCommand(<String>['PUBLISH', channel, message]);
   }
 
   /// send command to connection
+  @override
   Future<dynamic> sendCommand(List<String> commandList) async {
+    return await _pickConnection().sendCommand(commandList);
+  }
+
+  /// send many commands in one write on one connection
+  Future<List<dynamic>> _sendPipeline(List<List<String>> commands) async {
+    return await _pickConnection().sendPipeline(commands);
+  }
+
+  RedisConnection _pickConnection() {
     if (connection.isBusy == false || redisClientType != RedisType.normal) {
-      return connection.sendCommand(commandList);
+      return connection;
     }
-    return pool.sendCommand(commandList);
-  }
-
-  /// get command to set data to redis
-  List<String> getCommandToSetData(String key, String value,
-      [String? option, dynamic optionValue]) {
-    List<String> command = <String>[
-      'SET',
-      _setPrefixInKeys(<String>[key]).first,
-      value.toString()
-    ];
-    if (option != null && optionValue != null) {
-      command.addAll(<String>[option.toUpperCase(), optionValue.toString()]);
-    }
-    return command;
-  }
-
-  /// get command to get data from redis
-  List<String> getCommandToGetData(String key) {
-    List<String> command = <String>[
-      'GET',
-      _setPrefixInKeys(<String>[key]).first
-    ];
-    return command;
-  }
-
-  /// setting keys prefix before setting or getting values
-  List<String> _setPrefixInKeys(List<String> keys) {
-    return keys
-        .map((String k) =>
-            option.keyPrefix.isNotEmpty ? '${option.keyPrefix}:$k' : k)
-        .toList();
+    return pool.getConnection();
   }
 }

@@ -1,65 +1,51 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:ioredis/ioredis.dart';
 import 'package:test/test.dart';
 
+import 'helpers.dart';
+
 void main() {
   group('Redis |', () {
     test('race request', () async {
-      Redis redis = Redis(RedisOptions(
-        idleTimeout: Duration(seconds: 3),
-      ));
+      Redis redis = prefixedClient('race');
+      redis.option.idleTimeout = Duration(seconds: 3);
 
       await redis.set('key1', 'redis1');
       await redis.set('key2', 'redis2');
       await redis.set('key3', 'redis3');
 
-      List<Future<dynamic>> operations = <Future<dynamic>>[
+      List<dynamic> results = await Future.wait(<Future<dynamic>>[
         redis.get('key1'),
         redis.get('key2'),
         redis.get('key3'),
-      ];
+      ]);
 
-      List<dynamic> results = await Future.wait(operations);
-
-      expect(results.first, 'redis1');
-      expect(results.last, 'redis3');
-      expect(results.length, 3);
+      expect(results, <String>['redis1', 'redis2', 'redis3']);
     });
 
     test('keyPrefix', () async {
-      Redis redis = Redis(RedisOptions(keyPrefix: 'dox'));
+      Redis redis = prefixedClient('prefix');
+      Redis raw = testClient();
+      String prefix = redis.option.keyPrefix;
 
       await redis.set('foo', 'redis1');
-      String? s1 = await redis.get('key1');
-
-      expect(s1, 'redis1');
-
-      Redis redis2 = Redis();
-      String? s2 = await redis2.get('dox:foo');
-
-      expect(s2, 'redis1');
-
-      expect(s1, s2);
+      expect(await redis.get('foo'), 'redis1');
+      expect(await raw.get('$prefix:foo'), 'redis1');
 
       await redis.delete('foo');
-
-      String? s3 = await redis2.get('dox:foo');
-
-      expect(s3, null);
+      expect(await raw.get('$prefix:foo'), isNull);
     });
 
-    test('ut8f', () async {
-      Redis redis = Redis(RedisOptions(
-        port: 8379,
-      ));
+    test('utf8', () async {
+      Redis redis = prefixedClient('utf8', port: redisPort2);
       await redis.set('dox', 'မင်္ဂလာပါ');
-      String? data = await redis.get('dox');
-      expect(data, 'မင်္ဂလာပါ');
+      expect(await redis.get('dox'), 'မင်္ဂလာပါ');
     });
 
     test('multi', () async {
-      Redis redis = Redis();
+      Redis redis = prefixedClient('oldmulti');
       List<dynamic> result = await redis
           .multi()
           .set('foo', 'bar')
@@ -68,117 +54,98 @@ void main() {
           .get('bar')
           .exec();
 
-      expect(<String>['OK', 'OK', 'bar', 'foo'], result);
+      expect(result, <String>['OK', 'OK', 'bar', 'foo']);
     });
 
     test('custom socket', () async {
-      Redis redis = Redis();
-      redis.setSocket(await Socket.connect('127.0.0.1', 6379));
+      Redis redis = prefixedClient('socket');
+      redis.setSocket(await Socket.connect(redisHost, redisPort));
       await redis.set('dox', 'redis');
-      String? data = await redis.get('dox');
-      expect(data, 'redis');
+      expect(await redis.get('dox'), 'redis');
     });
 
-    test('test', () async {
-      Redis redis = Redis(RedisOptions(port: 8379));
+    test('values that start with RESP type bytes', () async {
+      Redis redis = prefixedClient('resp', port: redisPort2);
 
       await redis.set('dox', '\$Dox Framework');
       await redis.set('dox2', '*framework');
 
-      String? data1 = await redis.get('dox');
-      String? data2 = await redis.get('dox2');
-
-      expect(data1, '\$Dox Framework');
-      expect(data2, '*framework');
+      expect(await redis.get('dox'), '\$Dox Framework');
+      expect(await redis.get('dox2'), '*framework');
     });
 
     test('different db', () async {
-      Redis db1 = Redis(RedisOptions(port: 8379));
-      Redis db2 = Redis(RedisOptions(port: 8379, db: 2));
+      String key = uniquePrefix('db');
+      Redis db1 = testClient(port: redisPort2);
+      Redis db2 = testClient(port: redisPort2, db: 2);
+      addTearDown(() async {
+        await db1.del(key);
+        await db2.del(key);
+      });
 
-      await db1.set('dox', 'value1');
-      await db2.set('dox', 'value2');
+      await db1.set(key, 'value1');
+      await db2.set(key, 'value2');
 
-      String? data1 = await db1.get('dox');
-      String? data2 = await db2.get('dox');
-
-      expect(true, data1 != data2);
+      expect(await db1.get(key), 'value1');
+      expect(await db2.get(key), 'value2');
     });
 
     test('duplicate', () async {
-      Redis db1 = Redis(RedisOptions(port: 8379));
+      Redis db1 = prefixedClient('dup', port: redisPort2);
       Redis db2 = db1.duplicate();
+      addTearDown(db2.quit);
 
       await db1.set('dox', 'value1');
       await db2.set('dox', 'value2');
 
-      String? data1 = await db1.get('dox');
-      String? data2 = await db2.get('dox');
-
-      expect(data1, data2);
+      expect(await db1.get('dox'), 'value2');
+      expect(await db2.get('dox'), 'value2');
     });
 
     test('pub/sub', () async {
-      Redis sub = Redis(RedisOptions(port: 8379));
-
-      RedisSubscriber subscriber1 = await sub.subscribe(<String>['chat1']);
-      subscriber1.onMessage = (String channel, String? message) {
-        print(channel);
-        print(message);
-      };
-
-      RedisSubscriber subscriber2 = await sub.subscribe('chat2');
-      subscriber2.onMessage = (String channel, String? message) {
-        print(channel);
-        print(message);
-      };
-
+      String channel = uniquePrefix('chat');
+      Redis sub = testClient(port: redisPort2);
       Redis pub = sub.duplicate();
-      await pub.publish('chat1', 'hi');
-      await pub.publish('chat2', 'hello');
+      addTearDown(pub.quit);
+      List<String> got = <String>[];
+      Completer<void> done = Completer<void>();
 
-      await Future<void>.delayed(Duration(seconds: 1));
+      RedisSubscriber subscriber1 = await sub.subscribe(<String>['$channel:1']);
+      subscriber1.onMessage = (String channel, String? message) {
+        got.add('$channel=$message');
+      };
+
+      RedisSubscriber subscriber2 = await sub.subscribe('$channel:2');
+      subscriber2.onMessage = (String channel, String? message) {
+        got.add('$channel=$message');
+        done.complete();
+      };
+
+      await pub.publish('$channel:1', 'hi');
+      await pub.publish('$channel:2', 'hello');
+      await done.future.timeout(Duration(seconds: 2));
+
+      expect(got, <String>['$channel:1=hi', '$channel:2=hello']);
     });
 
     test('MGET', () async {
-      Redis redis = Redis(
-        RedisOptions(
-          port: 8379,
-        ),
-      );
+      Redis redis = prefixedClient('mget', port: redisPort2);
 
       await redis.set('A', '-AA');
       await redis.set('B', '+BB');
       await redis.set('C', 'CC');
       List<String?> res = await redis.mget(<String>['A', 'B', 'C', 'D']);
-      expect(<String?>['-AA', '+BB', 'CC', null], res);
+      expect(res, <String?>['-AA', '+BB', 'CC', null]);
     });
 
-    test('test expiry time', () async {
-      Redis redis = Redis(
-        RedisOptions(
-          port: 8379,
-        ),
-      );
+    test('expiry time', () async {
+      Redis redis = prefixedClient('expiry', port: redisPort2);
 
-      await redis.set(
-        'something',
-        'Dox Framework',
-        'EX',
-        Duration(seconds: 2).inSeconds,
-      );
+      await redis.set('something', 'Dox Framework', 'PX', 300);
+      expect(await redis.get('something'), 'Dox Framework');
 
-      await Future<void>.delayed(Duration(seconds: 1));
-
-      String? data = await redis.get('something');
-
-      expect(data, 'Dox Framework');
-
-      await Future<void>.delayed(Duration(seconds: 3));
-
-      String? data2 = await redis.get('something');
-
-      expect(data2, null);
+      await Future<void>.delayed(Duration(milliseconds: 500));
+      expect(await redis.get('something'), isNull);
     });
   });
 }

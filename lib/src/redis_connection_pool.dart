@@ -21,12 +21,32 @@ class RedisConnectionPool {
 
   /// Send command to connection
   Future<dynamic> sendCommand(List<String> commandList) {
+    return getConnection().sendCommand(commandList);
+  }
+
+  /// Open pool connections (not the main connection)
+  List<RedisConnection> get connections => _poolConnections.values.toList();
+
+  /// Destroy all pool connections and stop their idle timers
+  void destroyAll() {
+    for (Timer timer in _poolConnectionTimers.values) {
+      timer.cancel();
+    }
+    _poolConnectionTimers.clear();
+    for (RedisConnection conn in _poolConnections.values) {
+      conn.destroy();
+    }
+    _poolConnections.clear();
+  }
+
+  /// Pick a connection to send a command
+  RedisConnection getConnection() {
     /// If there is idle connection use idle connection
     MapEntry<int, RedisConnection>? idleConnection = _getIdleConnection();
     if (idleConnection != null) {
       // reset to prevent destroying, since connection is not idle anymore;
       _resetTimer(idleConnection.key);
-      return idleConnection.value.sendCommand(commandList);
+      return idleConnection.value;
     }
 
     /// If no idle connection create new connection if not over maxConnection yet.
@@ -36,7 +56,7 @@ class RedisConnectionPool {
       _poolConnections[connId] = conn;
       // reset to prevent destroying, since connection is not idle anymore;
       _resetTimer(connId);
-      return conn.sendCommand(commandList);
+      return conn;
     }
 
     /// If no idle connection and not able to create new connection,
@@ -44,11 +64,11 @@ class RedisConnectionPool {
     MapEntry<int, RedisConnection>? randomConnection = _getRandomConnection();
     if (randomConnection != null) {
       _resetTimer(randomConnection.key);
-      return randomConnection.value.sendCommand(commandList);
+      return randomConnection.value;
     }
 
     /// If there is no connection with connected state, use mainConnection
-    return mainConnection.sendCommand(commandList);
+    return mainConnection;
   }
 
   /// get not busy connection with connected state to send command

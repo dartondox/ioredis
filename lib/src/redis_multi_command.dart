@@ -29,8 +29,7 @@ abstract class RedisCommandBatch<T extends RedisCommandBatch<T>> {
     String? option,
     dynamic optionValue,
     String? flag,
-  ]) =>
-      _add(_redis.getCommandToSetData(key, value, option, optionValue, flag));
+  ]) => _add(_redis.getCommandToSetData(key, value, option, optionValue, flag));
 
   /// get value
   T get(String key) => _add(_redis.getCommandToGetData(key));
@@ -100,11 +99,9 @@ abstract class RedisCommandBatch<T extends RedisCommandBatch<T>> {
     bool gt = false,
     bool lt = false,
     bool ch = false,
-  }) =>
-      _add(
-        _redis._zaddCommand(key, members,
-            nx: nx, xx: xx, gt: gt, lt: lt, ch: ch),
-      );
+  }) => _add(
+    _redis._zaddCommand(key, members, nx: nx, xx: xx, gt: gt, lt: lt, ch: ch),
+  );
 }
 
 /// Transaction. All commands run on one connection inside MULTI ... EXEC.

@@ -16,6 +16,7 @@ dependencies:
 
 - Support Pub/Sub
 - Support pool connection by default
+- Auto-pipelining: commands sent in the same event-loop turn go out in one write
 - Support auto reconnect on failed
 - Support retry strategy
 - Support selectable database
@@ -232,9 +233,19 @@ await redis.evalsha(sha, 0);
 
 The first `numKeys` items are keys and get the key prefix.
 
-## Pool connection
+## Pool connection and auto-pipelining
 
-```dart 
+Commands share one connection. Commands sent in the same event-loop turn
+are written together in one socket write (auto-pipelining). Replies still
+come back to the right caller, in order.
+
+The pool is used when a blocking command (BLPOP, BRPOP, BLMOVE, XREAD BLOCK,
+WAIT, ...) waits on a connection. Then other commands go to a pool connection,
+so they do not wait behind it. `maxConnection` is the most connections
+(main connection included). A pool connection is closed after `idleTimeout`
+without use.
+
+```dart
 Redis redis = new Redis(RedisOptions(maxConnection: 10));
 String? value = await redis.get('key');
 ```

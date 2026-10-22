@@ -11,8 +11,9 @@ final String redisHost = Platform.environment['REDIS_HOST'] ?? '127.0.0.1';
 final int redisPort = int.parse(Platform.environment['REDIS_PORT'] ?? '6379');
 
 /// Second Redis port. Set REDIS_PORT_2 to change it.
-final int redisPort2 =
-    int.parse(Platform.environment['REDIS_PORT_2'] ?? '8379');
+final int redisPort2 = int.parse(
+  Platform.environment['REDIS_PORT_2'] ?? '8379',
+);
 
 /// Options that point to the test Redis.
 RedisOptions testOptions({String keyPrefix = '', int? port, int db = 0}) {

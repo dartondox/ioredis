@@ -17,9 +17,13 @@ class _PendingReply {
   /// When true, complete with all replies as a list, errors included.
   final bool isPipeline;
 
-  final List<dynamic> replies = <dynamic>[];
+  /// True when this entry holds a blocking command, like BRPOP.
+  final bool blocking;
 
-  _PendingReply(this.expected, this.isPipeline);
+  /// Replies so far. Only used when more than one reply is expected.
+  List<dynamic>? replies;
+
+  _PendingReply(this.expected, this.isPipeline, this.blocking);
 }
 
 class RedisConnection {
@@ -45,8 +49,11 @@ class RedisConnection {
   /// Running connect, so many callers wait for the same connect
   Future<void>? _connecting;
 
-  /// Serializer to send the command to redis
+  /// Bytes of commands that are not written to the socket yet
   final RedisMessageEncoder _encoder = RedisMessageEncoder();
+
+  /// True when a microtask will write [_encoder] to the socket
+  bool _flushScheduled = false;
 
   /// To check whether it should reconnect
   /// when socket is manually disconnect.
@@ -71,6 +78,13 @@ class RedisConnection {
 
   /// check connection is free (no command is waiting for a reply)
   bool get isBusy => _pending.isNotEmpty;
+
+  /// True while a blocking command (BLPOP, BRPOP, XREAD BLOCK, WAIT, ...)
+  /// waits for its reply. Other commands should use another connection then.
+  bool get isBlocked => _blocking > 0;
+
+  /// Number of blocking commands sent and not answered yet
+  int _blocking = 0;
 
   /// Get current connection status
   String getStatus() => status.name;
@@ -165,18 +179,26 @@ class RedisConnection {
 
   /// Parse new bytes and hand every complete reply to its owner
   void _onData(List<int> data) {
-    for (dynamic reply in _parser.feed(data)) {
-      if (_dispatchPushMessage(reply)) continue;
+    List<dynamic> replies = _parser.feed(data);
+    for (int i = 0; i < replies.length; i++) {
+      dynamic reply = replies[i];
+      if (reply is List && _dispatchPushMessage(reply)) continue;
       if (_pending.isEmpty) continue;
 
       _PendingReply entry = _pending.first;
-      entry.replies.add(reply);
-      if (entry.replies.length < entry.expected) continue;
-
-      _pending.removeFirst();
-      if (entry.isPipeline) {
-        entry.completer.complete(entry.replies);
-      } else if (reply is RedisError) {
+      if (entry.expected > 1 || entry.isPipeline) {
+        List<dynamic> got = entry.replies ??= <dynamic>[];
+        got.add(reply);
+        if (got.length < entry.expected) continue;
+        _takeFirst();
+        if (entry.isPipeline) {
+          entry.completer.complete(got);
+          continue;
+        }
+      } else {
+        _takeFirst();
+      }
+      if (reply is RedisError) {
         entry.completer.completeError(reply);
       } else {
         entry.completer.complete(reply);
@@ -186,8 +208,8 @@ class RedisConnection {
 
   /// Send pub/sub messages to the listeners.
   /// Returns true when the reply was a pub/sub message.
-  bool _dispatchPushMessage(dynamic reply) {
-    if (reply is! List || reply.isEmpty) return false;
+  bool _dispatchPushMessage(List<dynamic> reply) {
+    if (reply.isEmpty) return false;
 
     if (reply[0] == 'message' &&
         reply.length == 3 &&
@@ -224,6 +246,7 @@ class RedisConnection {
     /// and setting null to create again on reconnect
     _redisSocket?.destroy();
     _redisSocket = null;
+    _encoder.clear();
     status = RedisConnectionStatus.disconnected;
 
     SocketException error = SocketException(
@@ -241,8 +264,14 @@ class RedisConnection {
   /// Fail every waiting command, so no caller waits forever
   void _failPending(Object error) {
     while (_pending.isNotEmpty) {
-      _pending.removeFirst().completer.completeError(error);
+      _takeFirst().completer.completeError(error);
     }
+  }
+
+  _PendingReply _takeFirst() {
+    _PendingReply entry = _pending.removeFirst();
+    if (entry.blocking) _blocking--;
+    return entry;
   }
 
   /// Disconnect redis connection
@@ -275,8 +304,11 @@ class RedisConnection {
   /// Handle connection reconnect
   Future<void> _reconnect() async {
     if (_shouldReconnect) {
-      await Future<void>.delayed((option.retryStrategy ??
-          defaultRedisOptions.retryStrategy!)(_totalRetry));
+      await Future<void>.delayed(
+        (option.retryStrategy ?? defaultRedisOptions.retryStrategy!)(
+          _totalRetry,
+        ),
+      );
       await _connect();
     }
   }
@@ -289,9 +321,10 @@ class RedisConnection {
   /// ```
   Future<dynamic> sendCommand(List<String> commandList) {
     return _send(
-      <List<String>>[commandList],
+      commandList,
+      null,
       _expectedReplies(commandList),
-      isPipeline: false,
+      _isBlocking(commandList),
     );
   }
 
@@ -305,39 +338,127 @@ class RedisConnection {
   /// ```
   Future<List<dynamic>> sendPipeline(List<List<String>> commands) async {
     if (commands.isEmpty) return <dynamic>[];
-    return await _send(commands, commands.length, isPipeline: true);
+    // Inside MULTI a blocking command does not block.
+    bool blocking = false;
+    if (commands.first.isEmpty ||
+        commands.first.first.toUpperCase() != 'MULTI') {
+      for (List<String> c in commands) {
+        if (_isBlocking(c)) blocking = true;
+      }
+    }
+    return await _send(null, commands, commands.length, blocking);
   }
 
+  /// Send one command, or many commands as one pipeline.
+  /// Commands sent in the same event-loop turn are written together.
   Future<dynamic> _send(
-    List<List<String>> commands,
-    int expected, {
-    required bool isPipeline,
-  }) async {
-    if (status != RedisConnectionStatus.connected) {
-      await connect();
+    List<String>? command,
+    List<List<String>>? pipeline,
+    int expected,
+    bool blocking,
+  ) {
+    if (blocking) _blocking++;
+    if (status != RedisConnectionStatus.connected || _redisSocket == null) {
+      return _connectThenSend(command, pipeline, expected, blocking);
     }
+    return _enqueue(command, pipeline, expected, blocking);
+  }
+
+  Future<dynamic> _enqueue(
+    List<String>? command,
+    List<List<String>>? pipeline,
+    int expected,
+    bool blocking,
+  ) {
+    _PendingReply entry = _PendingReply(expected, pipeline != null, blocking);
+    _pending.add(entry);
+    if (command != null) {
+      _encoder.write(command);
+    } else {
+      for (int i = 0; i < pipeline!.length; i++) {
+        _encoder.write(pipeline[i]);
+      }
+    }
+    // Auto-pipelining: write once, after the code of this turn is done.
+    if (!_flushScheduled) {
+      _flushScheduled = true;
+      scheduleMicrotask(_flush);
+    }
+    return entry.completer.future;
+  }
+
+  Future<dynamic> _connectThenSend(
+    List<String>? command,
+    List<List<String>>? pipeline,
+    int expected,
+    bool blocking,
+  ) async {
+    try {
+      await connect();
+      if (_redisSocket == null) {
+        throw SocketException(
+          'Redis is not connected',
+          address: InternetAddress(option.host),
+          port: option.port,
+        );
+      }
+    } catch (_) {
+      if (blocking) _blocking--;
+      rethrow;
+    }
+    return _enqueue(command, pipeline, expected, blocking);
+  }
+
+  /// Write all queued command bytes in one socket write.
+  void _flush() {
+    _flushScheduled = false;
+    if (_encoder.length == 0) return;
     Socket? socket = _redisSocket;
     if (socket == null) {
-      throw SocketException(
-        'Redis is not connected',
-        address: InternetAddress(option.host),
-        port: option.port,
-      );
+      _encoder.clear();
+      return;
     }
-    _PendingReply entry = _PendingReply(expected, isPipeline);
-    _pending.add(entry);
+    try {
+      socket.add(_encoder.takeBytes());
+    } catch (error) {
+      _failPending(error);
+    }
+  }
 
-    List<int> bytes = <int>[];
-    for (List<String> command in commands) {
-      bytes.addAll(_encoder.encode(command));
+  /// Blocking commands can wait a long time for their reply.
+  bool _isBlocking(List<String> command) {
+    if (command.isEmpty) return false;
+    String name = command.first;
+    if (name.length < 4) return false;
+    int c = name.codeUnitAt(0) | 0x20; // lower case
+    if (c != 0x62 && c != 0x77 && c != 0x78) return false; // b w x
+    switch (name.toUpperCase()) {
+      case 'BLPOP':
+      case 'BRPOP':
+      case 'BRPOPLPUSH':
+      case 'BLMOVE':
+      case 'BLMPOP':
+      case 'BZPOPMIN':
+      case 'BZPOPMAX':
+      case 'BZMPOP':
+      case 'WAIT':
+      case 'WAITAOF':
+        return true;
+      case 'XREAD':
+      case 'XREADGROUP':
+        for (String arg in command) {
+          if (arg.toUpperCase() == 'BLOCK') return true;
+        }
     }
-    socket.add(bytes);
-    return entry.completer.future;
+    return false;
   }
 
   /// SUBSCRIBE a b c gets one reply per channel. Other commands get one reply.
   int _expectedReplies(List<String> commandList) {
-    String name = commandList.first.toUpperCase();
+    String name = commandList.first;
+    // Only names of 9 to 12 letters can be one of these.
+    if (name.length < 9 || name.length > 12) return 1;
+    name = name.toUpperCase();
     if (name == 'SUBSCRIBE' ||
         name == 'PSUBSCRIBE' ||
         name == 'UNSUBSCRIBE' ||

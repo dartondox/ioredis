@@ -1,5 +1,1 @@
-enum RedisConnectionStatus {
-  connected,
-  disconnected,
-  connecting,
-}
+enum RedisConnectionStatus { connected, disconnected, connecting }

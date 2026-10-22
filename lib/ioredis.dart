@@ -1,4 +1,4 @@
-library redis;
+library;
 
 export 'src/redis.dart';
 export 'src/redis_connection.dart';

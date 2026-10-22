@@ -35,7 +35,7 @@ mixin _ListCommands on _RedisBase {
   }
 
   /// Remove from the head. Without [count] returns String?,
-  /// with [count] returns List<String>? (null when the list is empty).
+  /// with [count] returns `List<String>?` (null when the list is empty).
   /// ```
   /// String? v = await redis.lpop('queue');
   /// List<String>? many = await redis.lpop('queue', 2);

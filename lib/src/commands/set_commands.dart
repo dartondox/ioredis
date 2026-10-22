@@ -57,7 +57,7 @@ mixin _SetCommands on _RedisBase {
   }
 
   /// Remove random members. Without [count] returns String?,
-  /// with [count] returns List<String>.
+  /// with [count] returns `List<String>`.
   /// ```
   /// String? one = await redis.spop('tags');
   /// ```

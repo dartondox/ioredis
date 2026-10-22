@@ -124,11 +124,11 @@ class Redis extends _RedisBase
   late RedisConnection connection;
 
   @override
-
   /// Own copy of the default options, so select() on one client
   /// does not change other clients.
-  late RedisOptions option =
-      RedisOptions(retryStrategy: defaultRedisOptions.retryStrategy);
+  late RedisOptions option = RedisOptions(
+    retryStrategy: defaultRedisOptions.retryStrategy,
+  );
 
   late RedisConnectionPool pool;
 
@@ -296,8 +296,8 @@ class Redis extends _RedisBase
   Future<void> unsubscribe([Object? channel]) async {
     List<String> channels = channel == null
         ? connection.subscribeListeners.keys
-            .expand((List<String> c) => c)
-            .toList()
+              .expand((List<String> c) => c)
+              .toList()
         : _args(channel);
     await sendCommand(<String>['UNSUBSCRIBE', ...channels]);
 
@@ -305,8 +305,9 @@ class Redis extends _RedisBase
         Map<List<String>, RedisSubscriber>.of(connection.subscribeListeners);
     connection.subscribeListeners.clear();
     listeners.forEach((List<String> key, RedisSubscriber cb) {
-      List<String> left =
-          key.where((String c) => !channels.contains(c)).toList();
+      List<String> left = key
+          .where((String c) => !channels.contains(c))
+          .toList();
       if (left.isNotEmpty) connection.subscribeListeners[left] = cb;
     });
     _resetClientTypeIfNoSubscription();
@@ -348,8 +349,8 @@ class Redis extends _RedisBase
 
   /// send command to connection
   @override
-  Future<dynamic> sendCommand(List<String> commandList) async {
-    return await _pickConnection().sendCommand(commandList);
+  Future<dynamic> sendCommand(List<String> commandList) {
+    return _pickConnection().sendCommand(commandList);
   }
 
   /// send many commands in one write on one connection
@@ -358,7 +359,10 @@ class Redis extends _RedisBase
   }
 
   RedisConnection _pickConnection() {
-    if (connection.isBusy == false || redisClientType != RedisType.normal) {
+    // Commands share the main connection and go out together
+    // (auto-pipelining). Only a blocking command, like BRPOP, makes the
+    // others use the pool, so they do not wait behind it.
+    if (!connection.isBlocked || redisClientType != RedisType.normal) {
       return connection;
     }
     return pool.getConnection();

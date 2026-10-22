@@ -1,13 +1,8 @@
-typedef RedisSubscriberCallback = void Function(
-  String channel,
-  String? message,
-);
+typedef RedisSubscriberCallback =
+    void Function(String channel, String? message);
 
-typedef RedisPatternSubscriberCallback = void Function(
-  String pattern,
-  String channel,
-  String? message,
-);
+typedef RedisPatternSubscriberCallback =
+    void Function(String pattern, String channel, String? message);
 
 class RedisSubscriber {
   /// listen for new message on the subscriber

@@ -7,16 +7,20 @@ import 'helpers.dart';
 
 void main() {
   group('errors |', () {
-    test('error reply throws RedisError and connection keeps working',
-        () async {
-      Redis redis = prefixedClient('errors');
-      await expectLater(
-          redis.call('NOT_A_COMMAND'), throwsA(isA<RedisError>()));
-      await redis.set('s', 'x');
-      await expectLater(redis.lpush('s', 'a'), throwsA(isA<RedisError>()));
-      expect(await redis.get('s'), 'x');
-      expect(await redis.ping(), 'PONG');
-    });
+    test(
+      'error reply throws RedisError and connection keeps working',
+      () async {
+        Redis redis = prefixedClient('errors');
+        await expectLater(
+          redis.call('NOT_A_COMMAND'),
+          throwsA(isA<RedisError>()),
+        );
+        await redis.set('s', 'x');
+        await expectLater(redis.lpush('s', 'a'), throwsA(isA<RedisError>()));
+        expect(await redis.get('s'), 'x');
+        expect(await redis.ping(), 'PONG');
+      },
+    );
   });
 
   group('call |', () {
@@ -50,15 +54,22 @@ void main() {
       expect(await redis.renamenx('d', 'e'), 0);
       expect(await redis.copy('d', 'f'), 1);
       expect(await redis.copy('d', 'f', replace: true), 1);
-      expect((await redis.keys('$prefix:*'))..sort(),
-          <String>['$prefix:d', '$prefix:e', '$prefix:f']);
+      expect((await redis.keys('$prefix:*'))..sort(), <String>[
+        '$prefix:d',
+        '$prefix:e',
+        '$prefix:f',
+      ]);
       expect(await redis.randomkey(), isNotNull);
 
       List<String> scanned = <String>[];
       String cursor = '0';
       do {
-        RedisScanResult res = await redis.scan(cursor,
-            match: '$prefix:*', count: 100, type: 'string');
+        RedisScanResult res = await redis.scan(
+          cursor,
+          match: '$prefix:*',
+          count: 100,
+          type: 'string',
+        );
         scanned.addAll(res.items);
         cursor = res.cursor;
       } while (cursor != '0');
@@ -91,8 +102,11 @@ void main() {
       expect(await redis.get('k'), isNull);
       expect(await redis.mset(<String, Object>{'a': 'x', 'b': 'y'}), 'OK');
       expect(await redis.msetnx(<String, Object>{'a': 'z', 'c': 'w'}), 0);
-      expect(
-          await redis.mget(<String>['a', 'b', 'c']), <String?>['x', 'y', null]);
+      expect(await redis.mget(<String>['a', 'b', 'c']), <String?>[
+        'x',
+        'y',
+        null,
+      ]);
       expect(await redis.incr('n'), 1);
       expect(await redis.incrby('n', 10), 11);
       expect(await redis.decr('n'), 10);
@@ -111,13 +125,19 @@ void main() {
     test('hash commands', () async {
       Redis redis = prefixedClient('hashes');
       expect(
-          await redis.hset('h', <String, Object>{'name': 'Ann', 'age': 30}), 2);
+        await redis.hset('h', <String, Object>{'name': 'Ann', 'age': 30}),
+        2,
+      );
       expect(await redis.hsetnx('h', 'name', 'Bob'), 0);
       expect(await redis.hget('h', 'name'), 'Ann');
-      expect(await redis.hmget('h', <String>['name', 'nope']),
-          <String?>['Ann', null]);
-      expect(await redis.hgetall('h'),
-          <String, String>{'name': 'Ann', 'age': '30'});
+      expect(await redis.hmget('h', <String>['name', 'nope']), <String?>[
+        'Ann',
+        null,
+      ]);
+      expect(await redis.hgetall('h'), <String, String>{
+        'name': 'Ann',
+        'age': '30',
+      });
       expect(await redis.hgetall('missing'), <String, String>{});
       expect(await redis.hexists('h', 'age'), 1);
       expect((await redis.hkeys('h'))..sort(), <String>['age', 'name']);
@@ -152,8 +172,10 @@ void main() {
       await redis.rpush('l', <String>['1', '2', '3']);
       expect(await redis.ltrim('l', 0, 1), 'OK');
       expect(await redis.lmove('l', 'l2', 'LEFT', 'RIGHT'), 'B');
-      expect(await redis.blpop(<String>['empty', 'l2'], 1),
-          <String>['${redis.option.keyPrefix}:l2', 'B']);
+      expect(await redis.blpop(<String>['empty', 'l2'], 1), <String>[
+        '${redis.option.keyPrefix}:l2',
+        'B',
+      ]);
       expect(await redis.brpop('empty', 0.1), isNull);
     });
   });
@@ -167,8 +189,10 @@ void main() {
       expect(await redis.sismember('a', '1'), 1);
       expect(await redis.smismember('a', <Object>['1', '9']), <int>[1, 0]);
       expect(await redis.scard('a'), 3);
-      expect(
-          (await redis.sinter(<String>['a', 'b']))..sort(), <String>['2', '3']);
+      expect((await redis.sinter(<String>['a', 'b']))..sort(), <String>[
+        '2',
+        '3',
+      ]);
       expect((await redis.sunion(<String>['a', 'b'])).length, 4);
       expect(await redis.sdiff(<String>['a', 'b']), <String>['1']);
       expect(await redis.sinterstore('i', <String>['a', 'b']), 2);
@@ -190,9 +214,13 @@ void main() {
       Redis redis = prefixedClient('zsets');
       expect(await redis.zadd('z', <String, num>{'a': 1, 'b': 2, 'c': 3.5}), 3);
       expect(
-          await redis.zadd('z', <String, num>{'a': 0}, gt: true, ch: true), 0);
+        await redis.zadd('z', <String, num>{'a': 0}, gt: true, ch: true),
+        0,
+      );
       expect(
-          await redis.zadd('z', <String, num>{'a': 5}, xx: true, ch: true), 1);
+        await redis.zadd('z', <String, num>{'a': 5}, xx: true, ch: true),
+        1,
+      );
       expect(await redis.zadd('z', <String, num>{'d': 9}, nx: true), 1);
       expect(await redis.zscore('z', 'c'), 3.5);
       expect(await redis.zscore('z', 'none'), isNull);
@@ -203,13 +231,19 @@ void main() {
       expect(await redis.zrevrank('z', 'b'), 3);
       expect(await redis.zrank('z', 'none'), isNull);
       expect(await redis.zrange('z', 0, -1), <String>['b', 'c', 'a', 'd']);
-      expect(
-          await redis.zrange('z', 0, 0, withScores: true), <String>['b', '3']);
+      expect(await redis.zrange('z', 0, 0, withScores: true), <String>[
+        'b',
+        '3',
+      ]);
       expect(await redis.zrevrange('z', 0, 1), <String>['d', 'a']);
-      expect(await redis.zrangebyscore('z', 3.5, '+inf', offset: 1, count: 1),
-          <String>['a']);
-      expect(await redis.zrevrangebyscore('z', '+inf', 5, withScores: true),
-          <String>['d', '9', 'a', '5']);
+      expect(
+        await redis.zrangebyscore('z', 3.5, '+inf', offset: 1, count: 1),
+        <String>['a'],
+      );
+      expect(
+        await redis.zrevrangebyscore('z', '+inf', 5, withScores: true),
+        <String>['d', '9', 'a', '5'],
+      );
       expect(await redis.zpopmin('z'), <String>['b', '3']);
       expect(await redis.zpopmax('z', 1), <String>['d', '9']);
       RedisScanResult res = await redis.zscan('z', 0);
@@ -246,14 +280,22 @@ void main() {
       Redis redis = prefixedClient('script');
       await redis.set('foo', 'bar');
       String lua = "return {KEYS[1], redis.call('GET', KEYS[1]), ARGV[1]}";
-      expect(await redis.eval(lua, 1, <Object>['foo', 7]),
-          <dynamic>['${redis.option.keyPrefix}:foo', 'bar', '7']);
+      expect(await redis.eval(lua, 1, <Object>['foo', 7]), <dynamic>[
+        '${redis.option.keyPrefix}:foo',
+        'bar',
+        '7',
+      ]);
       String sha = await redis.script('LOAD', <Object>[lua]);
-      expect(await redis.evalsha(sha, 1, <Object>['foo', 8]),
-          <dynamic>['${redis.option.keyPrefix}:foo', 'bar', '8']);
+      expect(await redis.evalsha(sha, 1, <Object>['foo', 8]), <dynamic>[
+        '${redis.option.keyPrefix}:foo',
+        'bar',
+        '8',
+      ]);
       expect(await redis.script('EXISTS', <Object>[sha]), <dynamic>[1]);
-      await expectLater(redis.eval("return redis.error_reply('boom')", 0),
-          throwsA(isA<RedisError>()));
+      await expectLater(
+        redis.eval("return redis.error_reply('boom')", 0),
+        throwsA(isA<RedisError>()),
+      );
     });
   });
 
@@ -317,8 +359,9 @@ void main() {
     test('multi throws EXECABORT when a command is rejected', () async {
       Redis redis = prefixedClient('multiabort');
       await expectLater(
-          redis.multi().set('a', '1').call('NOT_A_COMMAND').exec(),
-          throwsA(isA<RedisError>()));
+        redis.multi().set('a', '1').call('NOT_A_COMMAND').exec(),
+        throwsA(isA<RedisError>()),
+      );
       expect(await redis.get('a'), isNull);
     });
 
@@ -341,8 +384,10 @@ void main() {
           .set('a', 'x')
           .get('a')
           .call('NOT_A_COMMAND')
-          .zadd('z', <String, num>{'m': 1}).sadd(
-              's', <String>['1', '2']).exists(<String>['a', 's']).exec();
+          .zadd('z', <String, num>{'m': 1})
+          .sadd('s', <String>['1', '2'])
+          .exists(<String>['a', 's'])
+          .exec();
       expect(res[0], 'OK');
       expect(res[1], 'x');
       expect(res[2], isA<RedisError>());

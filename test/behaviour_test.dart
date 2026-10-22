@@ -18,30 +18,33 @@ void main() {
       expect(redis.connection.getStatus(), 'disconnected');
     });
 
-    test('sendPipeline on the connection and sendCommand on the pool',
-        () async {
-      Redis redis = prefixedClient('lowlevel');
-      String key = '${redis.option.keyPrefix}:k';
-      List<dynamic> res = await redis.connection.sendPipeline(<List<String>>[
-        <String>['SET', key, 'v'],
-        <String>['GET', key],
-        <String>['NOT_A_COMMAND'],
-      ]);
-      expect(res[0], 'OK');
-      expect(res[1], 'v');
-      expect(res[2], isA<RedisError>());
-      expect(await redis.pool.sendCommand(<String>['GET', key]), 'v');
-    });
+    test(
+      'sendPipeline on the connection and sendCommand on the pool',
+      () async {
+        Redis redis = prefixedClient('lowlevel');
+        String key = '${redis.option.keyPrefix}:k';
+        List<dynamic> res = await redis.connection.sendPipeline(<List<String>>[
+          <String>['SET', key, 'v'],
+          <String>['GET', key],
+          <String>['NOT_A_COMMAND'],
+        ]);
+        expect(res[0], 'OK');
+        expect(res[1], 'v');
+        expect(res[2], isA<RedisError>());
+        expect(await redis.pool.sendCommand(<String>['GET', key]), 'v');
+      },
+    );
 
     test('error reply does not break the client, even under load', () async {
       Redis redis = prefixedClient('errload');
       await redis.set('s', 'x');
       List<Future<dynamic>> jobs = <Future<dynamic>>[];
       for (int i = 0; i < 50; i++) {
-        jobs.add(redis.lpush('s', 'a').then(
-              (int _) => 'no error',
-              onError: (Object e) => e,
-            ));
+        jobs.add(
+          redis
+              .lpush('s', 'a')
+              .then((int _) => 'no error', onError: (Object e) => e),
+        );
         jobs.add(redis.get('s'));
       }
       List<dynamic> res = await Future.wait(jobs);
@@ -66,11 +69,13 @@ void main() {
       expect(await admin.call('CLIENT', <Object>['KILL', 'ID', id]), 1);
 
       // Wait until the client sees the closed socket and connects again.
-      for (int i = 0;
-          i < 100 &&
-              (errors.isEmpty ||
-                  redis.connection.status != RedisConnectionStatus.connected);
-          i++) {
+      for (
+        int i = 0;
+        i < 100 &&
+            (errors.isEmpty ||
+                redis.connection.status != RedisConnectionStatus.connected);
+        i++
+      ) {
         await Future<void>.delayed(Duration(milliseconds: 20));
       }
 
@@ -81,19 +86,22 @@ void main() {
   });
 
   group('concurrency |', () {
-    test('200 parallel set/get return the right value to each caller',
-        () async {
-      Redis redis = prefixedClient('parallel');
-      List<Future<dynamic>> sets = <Future<dynamic>>[
-        for (int i = 0; i < 200; i++) redis.set('k$i', 'v$i'),
-      ];
-      expect(await Future.wait(sets), everyElement('OK'));
-      List<String?> got = await Future.wait(<Future<String?>>[
-        for (int i = 0; i < 200; i++) redis.get('k$i'),
-      ]);
-      expect(got, <String>[for (int i = 0; i < 200; i++) 'v$i']);
-      expect(redis.pool.connections, isNotEmpty);
-    });
+    test(
+      '200 parallel set/get return the right value to each caller',
+      () async {
+        Redis redis = prefixedClient('parallel');
+        List<Future<dynamic>> sets = <Future<dynamic>>[
+          for (int i = 0; i < 200; i++) redis.set('k$i', 'v$i'),
+        ];
+        expect(await Future.wait(sets), everyElement('OK'));
+        List<String?> got = await Future.wait(<Future<String?>>[
+          for (int i = 0; i < 200; i++) redis.get('k$i'),
+        ]);
+        expect(got, <String>[for (int i = 0; i < 200; i++) 'v$i']);
+        // No blocking command, so all commands share the main connection.
+        expect(redis.pool.connections, isEmpty);
+      },
+    );
 
     test('mixed parallel commands of different types', () async {
       Redis redis = prefixedClient('mixed');
@@ -165,8 +173,11 @@ void main() {
     test('runtime error is an item, queue error throws EXECABORT', () async {
       Redis redis = prefixedClient('multierr');
       await redis.set('str', 'x');
-      List<dynamic> res =
-          await redis.multi().lpush('str', 'a').incr('n').exec();
+      List<dynamic> res = await redis
+          .multi()
+          .lpush('str', 'a')
+          .incr('n')
+          .exec();
       expect(res[0], isA<RedisError>());
       expect((res[0] as RedisError).message, startsWith('WRONGTYPE'));
       expect(res[1], 1);
@@ -247,8 +258,10 @@ void main() {
         await redis.eval('return {KEYS[1], ARGV[1]}', 1, <Object>['k', 'arg']),
         <dynamic>['$p:k', 'arg'],
       );
-      List<dynamic> batch =
-          await redis.pipeline().get('str').call('GET', <Object>['str']).exec();
+      List<dynamic> batch = await redis.pipeline().get('str').call(
+        'GET',
+        <Object>['str'],
+      ).exec();
       expect(batch, <dynamic>['plain', null]);
     });
 
@@ -347,10 +360,7 @@ void main() {
       String sha = await redis.script('load', <Object>["return 'hi'"]);
       expect(await redis.evalsha(sha, 0), 'hi');
       expect(await redis.script('EXISTS', <Object>[sha, 'nope']), <int>[1, 0]);
-      await expectLater(
-        redis.evalsha('0' * 40, 0),
-        throwsA(isA<RedisError>()),
-      );
+      await expectLater(redis.evalsha('0' * 40, 0), throwsA(isA<RedisError>()));
     });
   });
 

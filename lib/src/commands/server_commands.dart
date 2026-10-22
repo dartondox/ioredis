@@ -23,7 +23,7 @@ mixin _ServerCommands on _RedisBase {
   /// String pong = await redis.ping();
   /// ```
   Future<String> ping([String? message]) async {
-    return await sendCommand(<String>['PING', if (message != null) message]);
+    return await sendCommand(<String>['PING', ?message]);
   }
 
   /// Returns the message.
@@ -47,7 +47,7 @@ mixin _ServerCommands on _RedisBase {
   /// String info = await redis.info('server');
   /// ```
   Future<String> info([String? section]) async {
-    return await sendCommand(<String>['INFO', if (section != null) section]);
+    return await sendCommand(<String>['INFO', ?section]);
   }
 
   /// Server time: [unix seconds, microseconds].

@@ -1,4 +1,4 @@
-## Unreleased
+## 2.0.0-alpha.2
 
 Faster. With 64 commands in flight, a GET costs about 10 times less CPU
 (13.8 µs down to 1.2 µs per command on an Apple M-series Mac), and

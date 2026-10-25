@@ -42,7 +42,7 @@ class RedisMessageEncoder {
 
   /// Append one value to the buffer.
   /// Strings become bulk strings, lists become arrays,
-  /// ints inside a list become bulk strings.
+  /// ints and `Uint8List` inside a list become bulk strings.
   void write(Object? object) {
     if (object is String) {
       _writeBulk(object);
@@ -52,6 +52,8 @@ class RedisMessageEncoder {
         Object? v = object[i];
         if (v is String) {
           _writeBulk(v);
+        } else if (v is Uint8List) {
+          _writeBulkBytes(v);
         } else {
           write(v is int ? v.toString() : v);
         }

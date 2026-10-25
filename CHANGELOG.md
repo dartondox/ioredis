@@ -1,3 +1,21 @@
+## 2.0.0-alpha.3
+
+Binary pub/sub. Before, every message was decoded as UTF-8 text, so binary
+data like msgpack (used by the Socket.IO Redis adapter) was broken.
+
+- `publish(String channel, Object message)` now takes a `String` or a
+  `Uint8List`. Bytes are sent as they are. Other types throw `ArgumentError`.
+- New `RedisSubscriber.onMessageBytes` and
+  `RedisSubscriber.onPatternMessageBytes` callbacks. They get the exact
+  message bytes as `Uint8List`. Bytes that are not valid UTF-8 never throw.
+- A subscriber now subscribes again to its channels and patterns after a
+  reconnect. Before, it stayed connected but got no more messages.
+- `RedisConnection.sendCommand` now takes `List<Object>`. Each argument is a
+  `String` or a `Uint8List`.
+- New `RedisConnection.keepBytes`. When true, the parser keeps bulk strings
+  as bytes. `subscribe()` and `psubscribe()` turn it on. Command replies are
+  still `String`. Normal (non pub/sub) connections do not change.
+
 ## 2.0.0-alpha.2
 
 Faster. With 64 commands in flight, a GET costs about 10 times less CPU

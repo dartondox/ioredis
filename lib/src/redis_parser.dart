@@ -38,9 +38,15 @@ class RedisParser {
   /// End position of the element read by [_readElement].
   int _end = 0;
 
+  /// When true, bulk strings come out as `Uint8List` (raw bytes, not
+  /// decoded). Used on pub/sub connections, so binary payloads keep
+  /// their exact bytes.
+  bool keepBytes = false;
+
   /// Add bytes and get back all replies that are now complete.
   /// Reply types: `String` (simple and bulk string), `int`, `null`,
   /// `List<dynamic>` (array, may be nested) and [RedisError].
+  /// With [keepBytes], bulk strings are `Uint8List` instead of `String`.
   List<dynamic> feed(List<int> data) {
     Uint8List chunk = data is Uint8List ? data : Uint8List.fromList(data);
     Uint8List? rest = _rest;
@@ -134,10 +140,8 @@ class RedisParser {
         }
         int end = next + length;
         if (buf.length < end + 2) return end + 2 - pos;
-        _value = utf8.decode(
-          Uint8List.sublistView(buf, next, end),
-          allowMalformed: true,
-        );
+        Uint8List bytes = Uint8List.sublistView(buf, next, end);
+        _value = keepBytes ? bytes : utf8.decode(bytes, allowMalformed: true);
         _end = end + 2;
         return 0;
       case 0x3a: // ':' integer

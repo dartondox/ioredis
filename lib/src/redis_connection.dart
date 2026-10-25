@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ioredis/ioredis.dart';
 import 'package:ioredis/src/default.dart';
@@ -70,6 +72,11 @@ class RedisConnection {
   final Map<String, RedisSubscriber> patternListeners =
       <String, RedisSubscriber>{};
 
+  /// True after the first connect worked. A later connect is a reconnect.
+  bool _connectedBefore = false;
+
+  bool _keepBytes = false;
+
   RedisConnection([RedisOptions? opt]) {
     if (opt != null) {
       option = opt;
@@ -88,6 +95,16 @@ class RedisConnection {
 
   /// Get current connection status
   String getStatus() => status.name;
+
+  /// When true, the parser keeps bulk strings as bytes, so pub/sub
+  /// messages keep their exact bytes. Command replies are still `String`.
+  /// [Redis.subscribe] and [Redis.psubscribe] turn this on.
+  bool get keepBytes => _keepBytes;
+
+  set keepBytes(bool value) {
+    _keepBytes = value;
+    _parser.keepBytes = value;
+  }
 
   /// Set custom socket
   void setSocket(Socket socket) {
@@ -150,6 +167,10 @@ class RedisConnection {
 
       /// Select database index
       await _selectDatabaseIndex();
+
+      /// After a reconnect, subscribe again to the same channels and patterns
+      if (_connectedBefore) await _resubscribe();
+      _connectedBefore = true;
     } catch (error) {
       if (error is SocketException) {
         _throwSafeError(
@@ -173,7 +194,7 @@ class RedisConnection {
   /// Listen response from redis and sent to completer or callback.
   /// onDone callback is use to listen redis disconnect to reconnect
   void _listenResponseFromRedis() {
-    _parser = RedisParser();
+    _parser = RedisParser()..keepBytes = _keepBytes;
     _redisSocket?.listen(_onData, onError: _onSocketError, onDone: _onDone);
   }
 
@@ -184,6 +205,7 @@ class RedisConnection {
       dynamic reply = replies[i];
       if (reply is List && _dispatchPushMessage(reply)) continue;
       if (_pending.isEmpty) continue;
+      if (_keepBytes) reply = _bytesToText(reply);
 
       _PendingReply entry = _pending.first;
       if (entry.expected > 1 || entry.isPipeline) {
@@ -208,32 +230,84 @@ class RedisConnection {
 
   /// Send pub/sub messages to the listeners.
   /// Returns true when the reply was a pub/sub message.
+  /// With [keepBytes], the parts of the reply are bytes. Names are made
+  /// `String` here, and the message stays bytes until a callback needs it.
   bool _dispatchPushMessage(List<dynamic> reply) {
     if (reply.isEmpty) return false;
+    dynamic kind = reply[0];
+    if (kind is Uint8List) kind = _text(kind);
 
-    if (reply[0] == 'message' &&
+    if (kind == 'message' &&
         reply.length == 3 &&
         subscribeListeners.isNotEmpty) {
-      String channel = reply[1];
+      String channel = _text(reply[1]);
       RedisSubscriber? cb = _findSubscribeListener(channel);
-      cb?.onMessage?.call(channel, reply[2]);
+      if (cb == null) return true;
+      dynamic message = reply[2];
+      cb.onMessageBytes?.call(channel, _bytes(message));
+      cb.onMessage?.call(channel, _textOrNull(message));
       return true;
     }
 
-    if (reply[0] == 'pmessage' &&
+    if (kind == 'pmessage' &&
         reply.length == 4 &&
         patternListeners.isNotEmpty) {
-      String pattern = reply[1];
-      String channel = reply[2];
+      String pattern = _text(reply[1]);
+      String channel = _text(reply[2]);
       RedisSubscriber? cb = patternListeners[pattern];
-      if (cb?.onPatternMessage != null) {
-        cb!.onPatternMessage!(pattern, channel, reply[3]);
+      if (cb == null) return true;
+      dynamic message = reply[3];
+      if (cb.onPatternMessageBytes != null) {
+        cb.onPatternMessageBytes!(pattern, channel, _bytes(message));
       } else {
-        cb?.onMessage?.call(channel, reply[3]);
+        cb.onMessageBytes?.call(channel, _bytes(message));
+      }
+      if (cb.onPatternMessage != null) {
+        cb.onPatternMessage!(pattern, channel, _textOrNull(message));
+      } else {
+        cb.onMessage?.call(channel, _textOrNull(message));
       }
       return true;
     }
     return false;
+  }
+
+  /// Decode bytes as UTF-8. Bad bytes become U+FFFD, it never throws.
+  String _text(dynamic value) => value is Uint8List
+      ? utf8.decode(value, allowMalformed: true)
+      : value as String;
+
+  String? _textOrNull(dynamic value) => value == null ? null : _text(value);
+
+  /// A copy of the message bytes, so the caller can keep it safely.
+  Uint8List _bytes(dynamic value) {
+    if (value is Uint8List) return Uint8List.fromList(value);
+    return utf8.encode(value as String? ?? '');
+  }
+
+  /// Turn bytes into `String` in a command reply, also inside arrays.
+  dynamic _bytesToText(dynamic reply) {
+    if (reply is Uint8List) return _text(reply);
+    if (reply is List) {
+      for (int i = 0; i < reply.length; i++) {
+        reply[i] = _bytesToText(reply[i]);
+      }
+    }
+    return reply;
+  }
+
+  /// Send SUBSCRIBE and PSUBSCRIBE again for all listeners.
+  Future<void> _resubscribe() async {
+    List<String> channels = subscribeListeners.keys
+        .expand((List<String> c) => c)
+        .toList();
+    if (channels.isNotEmpty) {
+      await sendCommand(<String>['SUBSCRIBE', ...channels]);
+    }
+    List<String> patterns = patternListeners.keys.toList();
+    if (patterns.isNotEmpty) {
+      await sendCommand(<String>['PSUBSCRIBE', ...patterns]);
+    }
   }
 
   void _onSocketError(Object error) {
@@ -314,12 +388,13 @@ class RedisConnection {
   }
 
   /// Send redis command and wait for its reply.
+  /// Each argument is a `String` or a `Uint8List` (sent as raw bytes).
   /// An error reply from redis throws [RedisError].
   /// ```
   /// await redis.sendCommand(['SET', 'foo', 'bar']);
   /// await redis.sendCommand(['GET', 'foo']);
   /// ```
-  Future<dynamic> sendCommand(List<String> commandList) {
+  Future<dynamic> sendCommand(List<Object> commandList) {
     return _send(
       commandList,
       null,
@@ -352,7 +427,7 @@ class RedisConnection {
   /// Send one command, or many commands as one pipeline.
   /// Commands sent in the same event-loop turn are written together.
   Future<dynamic> _send(
-    List<String>? command,
+    List<Object>? command,
     List<List<String>>? pipeline,
     int expected,
     bool blocking,
@@ -365,7 +440,7 @@ class RedisConnection {
   }
 
   Future<dynamic> _enqueue(
-    List<String>? command,
+    List<Object>? command,
     List<List<String>>? pipeline,
     int expected,
     bool blocking,
@@ -388,7 +463,7 @@ class RedisConnection {
   }
 
   Future<dynamic> _connectThenSend(
-    List<String>? command,
+    List<Object>? command,
     List<List<String>>? pipeline,
     int expected,
     bool blocking,
@@ -426,10 +501,10 @@ class RedisConnection {
   }
 
   /// Blocking commands can wait a long time for their reply.
-  bool _isBlocking(List<String> command) {
+  bool _isBlocking(List<Object> command) {
     if (command.isEmpty) return false;
-    String name = command.first;
-    if (name.length < 4) return false;
+    Object name = command.first;
+    if (name is! String || name.length < 4) return false;
     int c = name.codeUnitAt(0) | 0x20; // lower case
     if (c != 0x62 && c != 0x77 && c != 0x78) return false; // b w x
     switch (name.toUpperCase()) {
@@ -446,18 +521,19 @@ class RedisConnection {
         return true;
       case 'XREAD':
       case 'XREADGROUP':
-        for (String arg in command) {
-          if (arg.toUpperCase() == 'BLOCK') return true;
+        for (Object arg in command) {
+          if (arg is String && arg.toUpperCase() == 'BLOCK') return true;
         }
     }
     return false;
   }
 
   /// SUBSCRIBE a b c gets one reply per channel. Other commands get one reply.
-  int _expectedReplies(List<String> commandList) {
-    String name = commandList.first;
+  int _expectedReplies(List<Object> commandList) {
+    Object first = commandList.first;
     // Only names of 9 to 12 letters can be one of these.
-    if (name.length < 9 || name.length > 12) return 1;
+    if (first is! String || first.length < 9 || first.length > 12) return 1;
+    String name = first;
     name = name.toUpperCase();
     if (name == 'SUBSCRIBE' ||
         name == 'PSUBSCRIBE' ||

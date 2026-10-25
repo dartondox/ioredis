@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ioredis/ioredis.dart';
 import 'package:ioredis/src/default.dart';
@@ -246,6 +247,11 @@ class Redis extends _RedisBase
   /// subscriber.onMessage = (String channel,String? message) {
   ///
   /// }
+  ///
+  /// // binary messages, like msgpack
+  /// subscriber.onMessageBytes = (String channel, Uint8List message) {
+  ///
+  /// }
   /// ```
   Future<RedisSubscriber> subscribe(Object channel) async {
     if (redisClientType == RedisType.publisher) {
@@ -260,6 +266,8 @@ class Redis extends _RedisBase
       throw Exception('Invalid type for channel');
     }
     redisClientType = RedisType.subscriber;
+    // Keep message bytes as they are, for onMessageBytes.
+    connection.keepBytes = true;
     RedisSubscriber cb = RedisSubscriber();
     // add the listener first, so no message is lost
     connection.subscribeListeners[channels] = cb;
@@ -280,6 +288,8 @@ class Redis extends _RedisBase
     }
     List<String> patterns = _args(pattern);
     redisClientType = RedisType.subscriber;
+    // Keep message bytes as they are, for onMessageBytes.
+    connection.keepBytes = true;
     RedisSubscriber cb = RedisSubscriber();
     for (String p in patterns) {
       connection.patternListeners[p] = cb;
@@ -332,19 +342,34 @@ class Redis extends _RedisBase
     if (connection.subscribeListeners.isEmpty &&
         connection.patternListeners.isEmpty) {
       redisClientType = RedisType.normal;
+      connection.keepBytes = false;
     }
   }
 
   /// Publish message to a channel. Returns how many clients got it.
+  /// The message is a `String` or a `Uint8List`. Bytes are sent as they
+  /// are, so binary data (like msgpack) is not changed.
   /// ```
   /// await redis.publish('chat', 'hello')
+  /// await redis.publish('chat', Uint8List.fromList([0x93, 0xa7]))
   /// ```
-  Future<int> publish(String channel, String message) async {
+  Future<int> publish(String channel, Object message) async {
+    if (message is! String && message is! Uint8List) {
+      throw ArgumentError.value(
+        message,
+        'message',
+        'must be a String or a Uint8List',
+      );
+    }
     if (redisClientType == RedisType.subscriber) {
       throw Exception('cannot subscribe and publish on same connection');
     }
     redisClientType = RedisType.publisher;
-    return await sendCommand(<String>['PUBLISH', channel, message]);
+    return await _pickConnection().sendCommand(<Object>[
+      'PUBLISH',
+      channel,
+      message,
+    ]);
   }
 
   /// send command to connection

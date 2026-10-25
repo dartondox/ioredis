@@ -9,7 +9,7 @@ Redis client for dart.
 
 ```yaml
 dependencies:
-  ioredis: ^2.0.0-alpha.2
+  ioredis: ^2.0.0-alpha.3
 ```
 
 ## Features
@@ -84,6 +84,32 @@ news.onPatternMessage = (String pattern, String channel, String? message) {
 await subClient.unsubscribe('chat');   // no argument: all channels
 await subClient.punsubscribe('news.*'); // no argument: all patterns
 ```
+
+### Binary messages
+
+`publish()` takes a `String` or a `Uint8List`. Bytes are sent as they are.
+Use `onMessageBytes` and `onPatternMessageBytes` to get the exact bytes
+back, for example for msgpack. Channel and pattern names stay `String`.
+
+```dart
+RedisSubscriber sub = await subClient.subscribe('room');
+sub.onMessageBytes = (String channel, Uint8List message) {
+    print(message); // the exact bytes that were published
+};
+
+RedisSubscriber psub = await subClient.psubscribe('room.*');
+psub.onPatternMessageBytes =
+    (String pattern, String channel, Uint8List message) {};
+
+await pubClient.publish('room', Uint8List.fromList([0x93, 0xc4, 0x02, 0xff, 0xfe]));
+```
+
+A subscriber can have both a text and a bytes callback. Then both are
+called. Bytes that are not valid UTF-8 never throw. In the text callback
+they become `U+FFFD`.
+
+After a lost connection, the client connects again and subscribes again
+to the same channels and patterns.
 
 ## Delete
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:ioredis/ioredis.dart';
 import 'package:test/test.dart';
@@ -305,6 +306,115 @@ void main() {
       expect(got, everyElement('$channel=x'));
       expect(await pub.publish('$channel:other', 'y'), 2);
       expect(await pub.publish(uniquePrefix('nobody'), 'z'), 0);
+    });
+
+    test('binary messages keep their exact bytes', () async {
+      String channel = uniquePrefix('bin');
+      // msgpack bytes, not valid UTF-8
+      Uint8List data = Uint8List.fromList(<int>[
+        0x93, 0xa7, 0x65, 0x6d, 0x69, 0x74, 0x74, 0x65, 0x72, //
+        0xc4, 0x02, 0xff, 0xfe, 0x00, 0xc0,
+      ]);
+      Redis sub = testClient();
+      Redis textSub = testClient();
+      Redis pub = testClient();
+
+      Completer<Uint8List> gotBytes = Completer<Uint8List>();
+      Completer<List<Object>> gotPattern = Completer<List<Object>>();
+      Completer<String?> gotText = Completer<String?>();
+      Completer<String?> gotPlain = Completer<String?>();
+
+      RedisSubscriber s = await sub.subscribe(channel);
+      s.onMessageBytes = (String ch, Uint8List message) {
+        expect(ch, channel);
+        gotBytes.complete(message);
+      };
+      // a text callback on the same subscriber does not throw
+      s.onMessage = (String ch, String? message) {
+        gotText.complete(message);
+      };
+      RedisSubscriber ps = await sub.psubscribe('$channel.*');
+      ps.onPatternMessageBytes = (String p, String ch, Uint8List message) {
+        gotPattern.complete(<Object>[p, ch, message]);
+      };
+      RedisSubscriber t = await textSub.subscribe('$channel:t');
+      t.onMessage = (String ch, String? message) {
+        gotPlain.complete(message);
+      };
+
+      expect(await pub.publish(channel, data), 1);
+      expect(await pub.publish('$channel.x', data), 1);
+      expect(await pub.publish('$channel:t', 'héllo'), 1);
+
+      Duration wait = Duration(seconds: 2);
+      expect(await gotBytes.future.timeout(wait), data);
+      expect(await gotText.future.timeout(wait), contains('\uFFFD'));
+      expect(await gotPattern.future.timeout(wait), <Object>[
+        '$channel.*',
+        '$channel.x',
+        data,
+      ]);
+      expect(await gotPlain.future.timeout(wait), 'héllo');
+
+      // replies of commands on a subscriber are still text
+      await sub.unsubscribe();
+      await sub.punsubscribe();
+      expect(await sub.call('ECHO', <Object>['hi']), 'hi');
+    });
+
+    test('binary subscriber subscribes again after reconnect', () async {
+      String channel = uniquePrefix('binre');
+      Uint8List data = Uint8List.fromList(<int>[0xc4, 0x02, 0xff, 0xfe]);
+      Redis sub = Redis(testOptions())..option.onError = (dynamic _) {};
+      addTearDown(sub.quit);
+      Redis admin = testClient();
+      Redis pub = testClient();
+
+      List<Uint8List> got = <Uint8List>[];
+      List<Uint8List> gotPattern = <Uint8List>[];
+      (await sub.subscribe(
+        channel,
+      )).onMessageBytes = (String ch, Uint8List message) {
+        got.add(message);
+      };
+      (await sub.psubscribe(
+        '$channel.*',
+      )).onMessageBytes = (String ch, Uint8List message) {
+        gotPattern.add(message);
+      };
+
+      List<dynamic> clients = (await admin.call('CLIENT', <Object>[
+        'LIST',
+      ])).toString().split('\n');
+      String id = clients
+          .firstWhere((dynamic c) => c.toString().contains('psub=1'))
+          .toString()
+          .split(' ')
+          .first
+          .substring(3);
+      await admin.call('CLIENT', <Object>['KILL', 'ID', id]);
+
+      // Wait until the subscriber is back on both channel and pattern.
+      for (int i = 0; i < 100; i++) {
+        if (await pub.call('PUBSUB', <Object>['NUMSUB', channel]) case [_, 1]) {
+          if (await pub.call('PUBSUB', <Object>['NUMPAT']) as int > 0) break;
+        }
+        await Future<void>.delayed(Duration(milliseconds: 20));
+      }
+
+      expect(await pub.publish(channel, data), 1);
+      expect(await pub.publish('$channel.a', data), 1);
+      for (int i = 0; i < 100 && (got.isEmpty || gotPattern.isEmpty); i++) {
+        await Future<void>.delayed(Duration(milliseconds: 20));
+      }
+      expect(got, <Uint8List>[data]);
+      expect(gotPattern, <Uint8List>[data]);
+    });
+
+    test('publish takes only String or Uint8List', () async {
+      Redis pub = testClient();
+      expect(() => pub.publish('x', 1), throwsArgumentError);
+      expect(() => pub.publish('x', <int>[1, 2]), throwsArgumentError);
     });
 
     test('subscriber cannot publish', () async {

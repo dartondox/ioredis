@@ -2,14 +2,13 @@
 
 Redis client for dart.
 
-> **2.0.0-alpha is a prerelease.** The API can still change before 2.0.0.
-> It has breaking changes from 1.x. See [CHANGELOG.md](CHANGELOG.md).
+> 3.0.0 has breaking changes from 1.x. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Install
 
 ```yaml
 dependencies:
-  ioredis: ^2.0.0-alpha.3
+  ioredis: ^3.0.0
 ```
 
 ## Features

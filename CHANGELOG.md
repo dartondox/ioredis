@@ -1,3 +1,12 @@
+## Unreleased
+
+- Fix a crash when `host` is a hostname, like `localhost` or a Docker
+  service name like `redis`. The client built its `SocketException` errors
+  with `InternetAddress(host)`, which only takes an IP address. So it threw
+  `Invalid internet address` when the connection closed, when a connect
+  failed, or when a command was sent while not connected. Now the error has
+  no address for a hostname, and an `InternetAddress` for an IP address.
+
 ## 3.0.0
 
 First stable release. It has all the changes from the 2.0.0 alpha

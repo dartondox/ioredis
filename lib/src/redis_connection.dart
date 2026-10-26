@@ -173,13 +173,7 @@ class RedisConnection {
       _connectedBefore = true;
     } catch (error) {
       if (error is SocketException) {
-        _throwSafeError(
-          SocketException(
-            error.message,
-            address: InternetAddress(option.host),
-            port: option.port,
-          ),
-        );
+        _throwSafeError(_socketError(error.message));
         status = RedisConnectionStatus.disconnected;
 
         /// If error is SocketException, need to reconnect
@@ -323,11 +317,7 @@ class RedisConnection {
     _encoder.clear();
     status = RedisConnectionStatus.disconnected;
 
-    SocketException error = SocketException(
-      'Redis disconnected',
-      address: InternetAddress(option.host),
-      port: option.port,
-    );
+    SocketException error = _socketError('Redis disconnected');
     _failPending(error);
     _throwSafeError(error);
     if (_shouldReconnect) {
@@ -471,11 +461,7 @@ class RedisConnection {
     try {
       await connect();
       if (_redisSocket == null) {
-        throw SocketException(
-          'Redis is not connected',
-          address: InternetAddress(option.host),
-          port: option.port,
-        );
+        throw _socketError('Redis is not connected');
       }
     } catch (_) {
       if (blocking) _blocking--;
@@ -572,6 +558,18 @@ class RedisConnection {
   /// Select database index
   Future<dynamic> _selectDatabaseIndex() async {
     return await sendCommand(<String>['SELECT', option.db.toString()]);
+  }
+
+  /// Build a SocketException for this connection.
+  /// option.host can be a hostname like `localhost` or `redis`.
+  /// InternetAddress() only takes an IP address and throws for a hostname,
+  /// so use tryParse. It gives null for a hostname.
+  SocketException _socketError(String message) {
+    return SocketException(
+      message,
+      address: InternetAddress.tryParse(option.host),
+      port: option.port,
+    );
   }
 
   /// Safely throw error

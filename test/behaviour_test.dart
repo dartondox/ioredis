@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ioredis/ioredis.dart';
@@ -83,6 +84,78 @@ void main() {
       expect(await redis.ping(), 'PONG');
       expect(await redis.call('CLIENT', <Object>['ID']), isNot(id));
       expect(errors, isNotEmpty);
+    });
+  });
+
+  group('hostname |', () {
+    // `localhost` is a hostname, not an IP address. Build errors and
+    // close the socket with it, and nothing may throw.
+    RedisOptions localhostOptions() =>
+        RedisOptions(host: 'localhost', port: redisPort);
+
+    test('connect, command and disconnect with localhost', () async {
+      Redis redis = Redis(localhostOptions());
+      await redis.connect();
+      expect(await redis.ping(), 'PONG');
+      await redis.disconnect();
+      await Future<void>.delayed(Duration(milliseconds: 50));
+      expect(redis.connection.getStatus(), 'disconnected');
+    });
+
+    test('quit with localhost does not throw on close', () async {
+      Redis redis = Redis(localhostOptions());
+      expect(await redis.ping(), 'PONG');
+      await redis.quit();
+      await Future<void>.delayed(Duration(milliseconds: 50));
+      expect(redis.connection.getStatus(), 'disconnected');
+    });
+
+    test('reconnects with localhost after the server kills it', () async {
+      List<Object> errors = <Object>[];
+      Redis redis = Redis(localhostOptions())
+        ..option.onError = (dynamic e) {
+          errors.add(e as Object);
+        };
+      addTearDown(redis.quit);
+      Redis admin = testClient();
+
+      int id = await redis.call('CLIENT', <Object>['ID']);
+      expect(await admin.call('CLIENT', <Object>['KILL', 'ID', id]), 1);
+
+      for (
+        int i = 0;
+        i < 100 &&
+            (errors.isEmpty ||
+                redis.connection.status != RedisConnectionStatus.connected);
+        i++
+      ) {
+        await Future<void>.delayed(Duration(milliseconds: 20));
+      }
+
+      expect(await redis.ping(), 'PONG');
+      expect(errors.single, isA<SocketException>());
+      expect((errors.single as SocketException).message, 'Redis disconnected');
+    });
+
+    test('connect error with an unknown hostname is a SocketException', () {
+      Redis redis = Redis(
+        RedisOptions(
+          host: 'no-such-host.invalid',
+          port: redisPort,
+          connectTimeout: Duration(seconds: 1),
+        ),
+      );
+      addTearDown(redis.disconnect);
+      List<Object> errors = <Object>[];
+      redis.option.onError = (dynamic e) {
+        errors.add(e as Object);
+        redis.connection.destroy();
+      };
+      redis.connect();
+      return Future<void>.delayed(Duration(seconds: 2), () {
+        expect(errors, isNotEmpty);
+        expect(errors.first, isA<SocketException>());
+      });
     });
   });
 

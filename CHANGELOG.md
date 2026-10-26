@@ -1,3 +1,8 @@
+## 3.0.0
+
+First stable release. It has all the changes from the 2.0.0 alpha
+versions below. There are no new changes since 2.0.0-alpha.3.
+
 ## 2.0.0-alpha.3
 
 Binary pub/sub. Before, every message was decoded as UTF-8 text, so binary

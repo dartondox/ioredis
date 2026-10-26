@@ -1,4 +1,4 @@
-## Unreleased
+## 3.0.1
 
 - Fix a crash when `host` is a hostname, like `localhost` or a Docker
   service name like `redis`. The client built its `SocketException` errors

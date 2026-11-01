@@ -295,10 +295,40 @@ void main() {
     await connecting;
     expect(conn.status, RedisConnectionStatus.connected);
   });
+
+  test('disconnect during a retry wait stops the retries', () async {
+    FakeRedis fake = await FakeRedis.start();
+    addTearDown(fake.close);
+    fake.autoReply = '-LOADING Redis is loading the dataset in memory\r\n';
+    RedisConnection conn = RedisConnection(
+      RedisOptions(
+        port: fake.server.port,
+        password: 'secret',
+        onError: _ignoreError,
+        retryStrategy: _slowRetry,
+      ),
+    );
+    addTearDown(conn.destroy);
+
+    Future<void> connecting = conn.connect();
+    await fake.waitFor('AUTH');
+    await Future<void>.delayed(Duration(milliseconds: 50));
+
+    // The connection now waits 200 ms before it tries again.
+    await conn.disconnect();
+    fake.autoReply = '+OK\r\n';
+    await connecting;
+    await Future<void>.delayed(Duration(milliseconds: 400));
+
+    expect(fake.clients.length, 1);
+    expect(conn.status, RedisConnectionStatus.disconnected);
+  });
 }
 
 void _ignoreError(dynamic error) {}
 
 Duration _noWait(int times) => Duration.zero;
+
+Duration _slowRetry(int times) => Duration(milliseconds: 200);
 
 Duration _fastRetry(int times) => Duration(milliseconds: 10);

@@ -178,6 +178,13 @@ class RedisConnection {
         /// that fails (like LOADING) must still back off more each time.
         _totalRetry = 0;
 
+        /// disconnect() was called during the handshake. Its socket close
+        /// ends this connection, so do not mark it connected.
+        if (!_shouldReconnect) {
+          status = RedisConnectionStatus.disconnected;
+          return;
+        }
+
         /// Set status as connected
         status = RedisConnectionStatus.connected;
         return;
@@ -212,6 +219,9 @@ class RedisConnection {
           _totalRetry,
         ),
       );
+
+      /// disconnect() can be called during the wait.
+      if (!_shouldReconnect) return;
     }
   }
 

@@ -158,5 +158,53 @@ void main() {
     await Future<void>.delayed(Duration(milliseconds: 100));
     expect(errors.whereType<RedisError>(), isNotEmpty);
     expect(conn.status, RedisConnectionStatus.disconnected);
+
+    // A wrong password does not fix itself, so there is no retry.
+    expect(fake.clients.length, 2);
+  });
+
+  test('a short AUTH problem on reconnect retries until it works', () async {
+    FakeRedis fake = await FakeRedis.start();
+    addTearDown(fake.close);
+    List<dynamic> errors = <dynamic>[];
+    RedisConnection conn = RedisConnection(
+      RedisOptions(
+        port: fake.server.port,
+        password: 'secret',
+        onError: errors.add,
+        retryStrategy: _fastRetry,
+      ),
+    );
+    addTearDown(conn.destroy);
+    // A subscriber sends no commands, so only a retry can bring it back.
+    conn.subscribeListeners[<String>['news']] = RedisSubscriber();
+
+    Future<void> connecting = conn.connect();
+    await fake.waitFor('AUTH');
+    await fake.reply('+OK\r\n');
+    await fake.waitFor('SELECT');
+    await fake.reply('+OK\r\n');
+    await connecting;
+
+    // The server restarts and is still loading its data.
+    fake.drop();
+    await fake.waitForClients(2);
+    await fake.waitFor('AUTH');
+    fake.received.clear();
+    await fake.reply('-LOADING Redis is loading the dataset in memory\r\n');
+
+    // It tries again on a new socket, and this time it works.
+    await fake.waitForClients(3);
+    await fake.waitFor('AUTH');
+    await fake.reply('+OK\r\n');
+    await fake.waitFor('SELECT');
+    await fake.reply('+OK\r\n');
+    await fake.waitFor('SUBSCRIBE');
+    await fake.reply('*3\r\n\$9\r\nsubscribe\r\n\$4\r\nnews\r\n:1\r\n');
+    await Future<void>.delayed(Duration(milliseconds: 50));
+    expect(conn.status, RedisConnectionStatus.connected);
+    expect(errors.whereType<RedisError>(), isNotEmpty);
   });
 }
+
+Duration _fastRetry(int times) => Duration(milliseconds: 10);

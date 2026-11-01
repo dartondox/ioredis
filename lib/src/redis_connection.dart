@@ -178,27 +178,46 @@ class RedisConnection {
       /// Set status as connected
       status = RedisConnectionStatus.connected;
     } catch (error) {
+      /// Close this socket. Cancel the listener first, so _onDone does not
+      /// run for it.
+      await _subscription?.cancel();
+      _subscription = null;
+      _redisSocket?.destroy();
+      _redisSocket = null;
+      _encoder.clear();
+      _failPending(error);
+      status = RedisConnectionStatus.disconnected;
+
       if (error is SocketException) {
         _throwSafeError(_socketError(error.message));
-        status = RedisConnectionStatus.disconnected;
 
         /// If error is SocketException, need to reconnect
         await _reconnect();
+      } else if (_isTemporary(error)) {
+        /// The server is not ready yet, like LOADING after a restart.
+        /// Try again with the normal backoff.
+        _throwSafeError(error);
+        await _reconnect();
       } else {
-        /// AUTH or SELECT failed. Close this socket without a reconnect,
-        /// so the next command connects again and gets the error too.
-        await _subscription?.cancel();
-        _subscription = null;
-        _redisSocket?.destroy();
-        _redisSocket = null;
-        _encoder.clear();
-        _failPending(error);
-        status = RedisConnectionStatus.disconnected;
-
-        /// rethrow application logic errors
+        /// AUTH or SELECT failed for good, like a wrong password.
+        /// No reconnect. The next command connects again and gets the error.
         rethrow;
       }
     }
+  }
+
+  /// Error replies that go away by themselves after a short time.
+  static const List<String> _temporaryErrors = <String>[
+    'LOADING',
+    'BUSY',
+    'MASTERDOWN',
+    'TRYAGAIN',
+  ];
+
+  bool _isTemporary(Object error) {
+    if (error is! RedisError) return false;
+    String code = error.message.split(' ').first;
+    return _temporaryErrors.contains(code);
   }
 
   /// Listen response from redis and sent to completer or callback.

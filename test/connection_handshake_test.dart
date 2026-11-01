@@ -294,7 +294,7 @@ void main() {
     fake.autoReply = '+OK\r\n';
     await connecting;
     expect(conn.status, RedisConnectionStatus.connected);
-  }, timeout: Timeout(Duration(minutes: 1)));
+  });
 }
 
 void _ignoreError(dynamic error) {}

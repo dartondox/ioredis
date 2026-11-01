@@ -22,13 +22,19 @@ class FakeRedis {
     return FakeRedis(await ServerSocket.bind(InternetAddress.loopbackIPv4, 0));
   }
 
+  /// When set, the server writes this to the newest client for every
+  /// chunk it gets. The test does not need to reply by hand then.
+  String? autoReply;
+
   void _onClient(Socket socket) {
     clients.add(socket);
-    socket.listen(_onData, onError: _ignore);
+    socket.listen(_onData, onError: _ignore, onDone: socket.destroy);
   }
 
   void _onData(List<int> data) {
     received.write(utf8.decode(data));
+    String? text = autoReply;
+    if (text != null) clients.last.write(text);
   }
 
   void _ignore(Object error) {}
@@ -237,6 +243,62 @@ void main() {
     expect(conn.status, RedisConnectionStatus.connected);
     expect(errors.whereType<SocketException>(), isNotEmpty);
   });
+
+  test('handshake retries follow the backoff', () async {
+    FakeRedis fake = await FakeRedis.start();
+    addTearDown(fake.close);
+    fake.autoReply = '-LOADING Redis is loading the dataset in memory\r\n';
+    List<int> waits = <int>[];
+    RedisConnection conn = RedisConnection(
+      RedisOptions(
+        port: fake.server.port,
+        password: 'secret',
+        onError: _ignoreError,
+        retryStrategy: (int times) {
+          waits.add(times);
+          return Duration(milliseconds: times * 20);
+        },
+      ),
+    );
+    addTearDown(conn.destroy);
+
+    unawaited(conn.connect());
+    await Future<void>.delayed(Duration(milliseconds: 500));
+
+    // Waits are 20, 40, 60 ... ms, so about 6 tries fit in 500 ms.
+    expect(waits.take(3), <int>[1, 2, 3]);
+    expect(fake.clients.length, inInclusiveRange(3, 10));
+  });
+
+  test('many handshake retries do not grow the stack', () async {
+    FakeRedis fake = await FakeRedis.start();
+    addTearDown(fake.close);
+    fake.autoReply = '-LOADING Redis is loading the dataset in memory\r\n';
+    RedisConnection conn = RedisConnection(
+      RedisOptions(
+        port: fake.server.port,
+        password: 'secret',
+        onError: _ignoreError,
+        retryStrategy: _noWait,
+      ),
+    );
+    addTearDown(conn.destroy);
+
+    Future<void> connecting = conn.connect();
+    for (int i = 0; i < 2000 && fake.clients.length < 2000; i++) {
+      await Future<void>.delayed(Duration(milliseconds: 5));
+    }
+    expect(fake.clients.length, greaterThanOrEqualTo(2000));
+
+    // Now the server is ready. The connect must finish without an error.
+    fake.autoReply = '+OK\r\n';
+    await connecting;
+    expect(conn.status, RedisConnectionStatus.connected);
+  }, timeout: Timeout(Duration(minutes: 1)));
 }
+
+void _ignoreError(dynamic error) {}
+
+Duration _noWait(int times) => Duration.zero;
 
 Duration _fastRetry(int times) => Duration(milliseconds: 10);

@@ -2,7 +2,9 @@
 
 - New `RedisOptions.fromUrl(url)`. It reads the host, port, user, password
   and db from a `redis://` URL. A `rediss://` URL turns on TLS. Other
-  options are named arguments. The old constructor does not change.
+  options are named arguments. The db can also come from `?db=`. Other
+  query params are ignored. Error messages hide the user and password.
+  The old constructor does not change.
 - `RedisSetOption` is now deprecated. It was empty and not used. It will be
   removed in the next major version.
 - New tests for AUTH (right and wrong password) and for TLS.

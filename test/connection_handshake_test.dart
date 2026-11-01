@@ -118,19 +118,30 @@ void main() {
   });
 
   test('rediss:// connects over TLS and sends AUTH', () async {
+    if (!_hasOpenssl()) {
+      markTestSkipped('openssl is not installed');
+      return;
+    }
+
     // A self-signed cert, made with openssl for this test only.
     Directory dir = await Directory.systemTemp.createTemp('ioredis_tls');
     addTearDown(() => dir.delete(recursive: true));
+    String args =
+        'req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost';
+    String keyFile = '${dir.path}/key.pem';
+    String certFile = '${dir.path}/cert.pem';
     ProcessResult made = await Process.run('openssl', <String>[
-      'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', //
-      '-subj', '/CN=localhost',
-      '-keyout', '${dir.path}/key.pem', '-out', '${dir.path}/cert.pem',
+      ...args.split(' '),
+      '-keyout',
+      keyFile,
+      '-out',
+      certFile,
     ]);
     expect(made.exitCode, 0, reason: '${made.stderr}');
 
     SecurityContext context = SecurityContext()
-      ..useCertificateChain('${dir.path}/cert.pem')
-      ..usePrivateKey('${dir.path}/key.pem');
+      ..useCertificateChain(certFile)
+      ..usePrivateKey(keyFile);
     SecureServerSocket server = await SecureServerSocket.bind(
       InternetAddress.loopbackIPv4,
       0,
@@ -158,7 +169,7 @@ void main() {
     expect(conn.status, RedisConnectionStatus.connected);
     expect(sawBadCert, isTrue);
     expect(received.toString(), contains('AUTH\r\n\$6\r\nsecret'));
-  }, skip: _hasOpenssl() ? false : 'openssl is not installed');
+  });
 
   test('commands wait until AUTH and SELECT are done', () async {
     FakeRedis fake = await FakeRedis.start();

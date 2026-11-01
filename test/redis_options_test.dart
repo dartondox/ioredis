@@ -45,6 +45,33 @@ void main() {
       expect(o.maxConnection, 3);
     });
 
+    test('reads db from ?db= when there is no path', () {
+      expect(RedisOptions.fromUrl('redis://localhost?db=5').db, 5);
+      expect(RedisOptions.fromUrl('redis://localhost/2?db=5').db, 2);
+    });
+
+    test('error messages never show the password', () {
+      List<String> bad = <String>[
+        'http://bob:hunter2@host:6379',
+        'redis://bob:hunter2@host:99999999999999999999',
+        'redis://bob:hunter2@host:abc',
+        'redis://bob:hunter2@host/abc',
+        'redis://bob:hunter2@host?db=abc',
+        'redis://bob:hunter2%FF@host',
+      ];
+      for (String url in bad) {
+        Object? error;
+        try {
+          RedisOptions.fromUrl(url);
+        } catch (e) {
+          error = e;
+        }
+        expect(error, isNotNull, reason: url);
+        expect(error.toString(), isNot(contains('hunter2')), reason: url);
+        expect(error.toString(), contains('***@host'), reason: url);
+      }
+    });
+
     test('rejects other schemes and a bad db', () {
       expect(() => RedisOptions.fromUrl('http://x'), throwsArgumentError);
       expect(

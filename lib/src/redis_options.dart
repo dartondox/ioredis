@@ -79,10 +79,14 @@ class RedisOptions {
   /// RedisOptions.fromUrl('rediss://user:pass@example.com:6380/2');
   /// ```
   /// The user and password may be percent-encoded. Use `redis://:pass@host`
-  /// to send a password without a user. Other options are named arguments.
+  /// to send a password without a user. A user with no password is kept in
+  /// [username], but no AUTH is sent, because AUTH needs a password.
+  ///
+  /// The db comes from the path (`/2`) or from `?db=2`. The path wins.
+  /// Other query params are ignored. Other options are named arguments.
   ///
   /// Throws [ArgumentError] for any other scheme, and [FormatException]
-  /// when the db is not a number.
+  /// for a bad URL, port or db. Error messages hide the user and password.
   factory RedisOptions.fromUrl(
     String url, {
     String keyPrefix = '',
@@ -93,10 +97,17 @@ class RedisOptions {
     Duration idleTimeout = const Duration(seconds: 10),
     bool Function(X509Certificate)? onBadCertificate,
   }) {
-    Uri uri = Uri.parse(url);
+    // The URL can hold a password, so errors only show a redacted copy.
+    String safeUrl = url.replaceFirst(RegExp(r'//.*@'), '//***@');
+    Uri uri;
+    try {
+      uri = Uri.parse(url);
+    } on FormatException {
+      throw FormatException('Invalid Redis URL: $safeUrl');
+    }
     if (uri.scheme != 'redis' && uri.scheme != 'rediss') {
       throw ArgumentError.value(
-        url,
+        safeUrl,
         'url',
         'must start with redis:// or rediss://',
       );
@@ -109,13 +120,20 @@ class RedisOptions {
       String user = colon == -1
           ? uri.userInfo
           : uri.userInfo.substring(0, colon);
-      if (user.isNotEmpty) username = Uri.decodeComponent(user);
-      if (colon != -1) {
-        password = Uri.decodeComponent(uri.userInfo.substring(colon + 1));
+      try {
+        if (user.isNotEmpty) username = Uri.decodeComponent(user);
+        if (colon != -1) {
+          password = Uri.decodeComponent(uri.userInfo.substring(colon + 1));
+        }
+      } catch (_) {
+        throw FormatException('Invalid user or password in $safeUrl');
       }
     }
 
     String path = uri.path.startsWith('/') ? uri.path.substring(1) : uri.path;
+    String dbText = path.isEmpty ? (uri.queryParameters['db'] ?? '') : path;
+    int? db = dbText.isEmpty ? 0 : int.tryParse(dbText);
+    if (db == null) throw FormatException('Invalid db in $safeUrl');
 
     return RedisOptions(
       host: uri.host.isEmpty ? '127.0.0.1' : uri.host,
@@ -123,7 +141,7 @@ class RedisOptions {
       secure: uri.scheme == 'rediss',
       username: username,
       password: password,
-      db: path.isEmpty ? 0 : int.parse(path),
+      db: db,
       keyPrefix: keyPrefix,
       connectTimeout: connectTimeout,
       retryStrategy: retryStrategy,

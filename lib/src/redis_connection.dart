@@ -128,65 +128,69 @@ class RedisConnection {
     _connecting = null;
   }
 
+  /// Connect, and try again with the backoff until it works, or until the
+  /// error is not one that goes away. A loop, not recursion, so a long
+  /// run of retries does not grow the stack.
   Future<void> _connect() async {
-    _totalRetry++;
-    try {
-      status = RedisConnectionStatus.connecting;
+    while (true) {
+      _totalRetry++;
+      try {
+        status = RedisConnectionStatus.connecting;
 
-      /// Create new socket if not exist
-      if (_redisSocket == null) {
-        if (option.secure == true) {
-          _redisSocket = await SecureSocket.connect(
-            option.host,
-            option.port,
-            timeout: option.connectTimeout,
-            onBadCertificate: option.onBadCertificate,
-          );
-        } else {
-          _redisSocket = await Socket.connect(
-            option.host,
-            option.port,
-            timeout: option.connectTimeout,
-          );
+        /// Create new socket if not exist
+        if (_redisSocket == null) {
+          if (option.secure == true) {
+            _redisSocket = await SecureSocket.connect(
+              option.host,
+              option.port,
+              timeout: option.connectTimeout,
+              onBadCertificate: option.onBadCertificate,
+            );
+          } else {
+            _redisSocket = await Socket.connect(
+              option.host,
+              option.port,
+              timeout: option.connectTimeout,
+            );
+          }
         }
-      }
 
-      /// Setting socket option to tcp no delay
-      /// If tcpNoDelay is enabled, the socket will not buffer data internally,
-      /// but instead write each data chunk as an individual TCP packet.
-      _redisSocket?.setOption(SocketOption.tcpNoDelay, true);
+        /// Setting socket option to tcp no delay
+        /// If tcpNoDelay is enabled, the socket will not buffer data internally,
+        /// but instead write each data chunk as an individual TCP packet.
+        _redisSocket?.setOption(SocketOption.tcpNoDelay, true);
 
-      /// listening for response
-      _listenResponseFromRedis();
+        /// listening for response
+        _listenResponseFromRedis();
 
-      /// Once socket is connect reset retry count to zero
-      _totalRetry = 0;
+        /// Status stays `connecting` until AUTH and SELECT are done.
+        /// Other commands wait for this connect, so none of them can run
+        /// before AUTH or on the wrong database.
+        /// The handshake has its own connectTimeout, so a server that
+        /// never replies cannot hang the connect.
+        await _handshake().timeout(
+          option.connectTimeout,
+          onTimeout: _handshakeTimedOut,
+        );
+        _connectedBefore = true;
 
-      /// Status stays `connecting` until AUTH and SELECT are done.
-      /// Other commands wait for this connect, so none of them can run
-      /// before AUTH or on the wrong database.
-      /// If username is provided, we need to login before calling other commands
-      await _login();
+        /// Reset the retry count only after the handshake works. A handshake
+        /// that fails (like LOADING) must still back off more each time.
+        _totalRetry = 0;
 
-      /// Select database index
-      await _selectDatabaseIndex();
+        /// disconnect() was called during the handshake. Its socket close
+        /// ends this connection, so do not mark it connected.
+        if (!_shouldReconnect) {
+          status = RedisConnectionStatus.disconnected;
+          return;
+        }
 
-      /// After a reconnect, subscribe again to the same channels and patterns
-      if (_connectedBefore) await _resubscribe();
-      _connectedBefore = true;
-
-      /// Set status as connected
-      status = RedisConnectionStatus.connected;
-    } catch (error) {
-      if (error is SocketException) {
-        _throwSafeError(_socketError(error.message));
-        status = RedisConnectionStatus.disconnected;
-
-        /// If error is SocketException, need to reconnect
-        await _reconnect();
-      } else {
-        /// AUTH or SELECT failed. Close this socket without a reconnect,
-        /// so the next command connects again and gets the error too.
+        /// Set status as connected
+        status = RedisConnectionStatus.connected;
+        return;
+      } catch (error) {
+        /// Close this socket. Cancel the listener first, so _onDone does not
+        /// run for it.
         await _subscription?.cancel();
         _subscription = null;
         _redisSocket?.destroy();
@@ -195,10 +199,61 @@ class RedisConnection {
         _failPending(error);
         status = RedisConnectionStatus.disconnected;
 
-        /// rethrow application logic errors
-        rethrow;
+        if (error is SocketException) {
+          _throwSafeError(_socketError(error.message));
+        } else if (_isTemporary(error)) {
+          /// The server is not ready yet, like LOADING after a restart.
+          /// Try again with the normal backoff.
+          _throwSafeError(error);
+        } else {
+          /// AUTH or SELECT failed for good, like a wrong password.
+          /// No reconnect. The next command connects again and gets the error.
+          rethrow;
+        }
       }
+
+      /// SocketException or a temporary error. Wait, then try again.
+      if (!_shouldReconnect) return;
+      await Future<void>.delayed(
+        (option.retryStrategy ?? defaultRedisOptions.retryStrategy!)(
+          _totalRetry,
+        ),
+      );
+
+      /// disconnect() can be called during the wait.
+      if (!_shouldReconnect) return;
     }
+  }
+
+  /// Error replies that go away by themselves after a short time.
+  static const List<String> _temporaryErrors = <String>[
+    'LOADING',
+    'BUSY',
+    'MASTERDOWN',
+    'TRYAGAIN',
+  ];
+
+  bool _isTemporary(Object error) {
+    if (error is! RedisError) return false;
+    String code = error.message.split(' ').first;
+    return _temporaryErrors.contains(code);
+  }
+
+  /// AUTH, SELECT, and SUBSCRIBE again after a reconnect.
+  Future<void> _handshake() async {
+    /// If username is provided, we need to login before calling other commands
+    await _login();
+
+    /// Select database index
+    await _selectDatabaseIndex();
+
+    /// After a reconnect, subscribe again to the same channels and patterns
+    if (_connectedBefore) await _resubscribe();
+  }
+
+  /// A SocketException, so the connect tries again like for a network error.
+  Never _handshakeTimedOut() {
+    throw _socketError('Redis handshake timed out');
   }
 
   /// Listen response from redis and sent to completer or callback.
@@ -341,7 +396,13 @@ class RedisConnection {
     _failPending(error);
     _throwSafeError(error);
     if (_shouldReconnect) {
-      await connect();
+      /// Nobody waits for this reconnect, so its error (like a failed
+      /// AUTH) must go to onError. Thrown here, it would crash the app.
+      try {
+        await connect();
+      } catch (error) {
+        _throwSafeError(error);
+      }
     }
   }
 
@@ -383,18 +444,6 @@ class RedisConnection {
     _shouldReconnect = false;
     _shouldThrowErrorOnConnection = false;
     _redisSocket?.destroy();
-  }
-
-  /// Handle connection reconnect
-  Future<void> _reconnect() async {
-    if (_shouldReconnect) {
-      await Future<void>.delayed(
-        (option.retryStrategy ?? defaultRedisOptions.retryStrategy!)(
-          _totalRetry,
-        ),
-      );
-      await _connect();
-    }
   }
 
   /// Send redis command and wait for its reply.

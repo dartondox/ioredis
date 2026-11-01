@@ -38,6 +38,9 @@ class RedisConnection {
   /// Current active socket;
   Socket? _redisSocket;
 
+  /// Listener of the current socket
+  StreamSubscription<Uint8List>? _subscription;
+
   /// Total retry count
   int _totalRetry = 0;
 
@@ -156,12 +159,12 @@ class RedisConnection {
       /// listening for response
       _listenResponseFromRedis();
 
-      /// Set status as connected
-      status = RedisConnectionStatus.connected;
-
       /// Once socket is connect reset retry count to zero
       _totalRetry = 0;
 
+      /// Status stays `connecting` until AUTH and SELECT are done.
+      /// Other commands wait for this connect, so none of them can run
+      /// before AUTH or on the wrong database.
       /// If username is provided, we need to login before calling other commands
       await _login();
 
@@ -171,6 +174,9 @@ class RedisConnection {
       /// After a reconnect, subscribe again to the same channels and patterns
       if (_connectedBefore) await _resubscribe();
       _connectedBefore = true;
+
+      /// Set status as connected
+      status = RedisConnectionStatus.connected;
     } catch (error) {
       if (error is SocketException) {
         _throwSafeError(_socketError(error.message));
@@ -179,6 +185,16 @@ class RedisConnection {
         /// If error is SocketException, need to reconnect
         await _reconnect();
       } else {
+        /// AUTH or SELECT failed. Close this socket without a reconnect,
+        /// so the next command connects again and gets the error too.
+        await _subscription?.cancel();
+        _subscription = null;
+        _redisSocket?.destroy();
+        _redisSocket = null;
+        _encoder.clear();
+        _failPending(error);
+        status = RedisConnectionStatus.disconnected;
+
         /// rethrow application logic errors
         rethrow;
       }
@@ -189,7 +205,11 @@ class RedisConnection {
   /// onDone callback is use to listen redis disconnect to reconnect
   void _listenResponseFromRedis() {
     _parser = RedisParser()..keepBytes = _keepBytes;
-    _redisSocket?.listen(_onData, onError: _onSocketError, onDone: _onDone);
+    _subscription = _redisSocket?.listen(
+      _onData,
+      onError: _onSocketError,
+      onDone: _onDone,
+    );
   }
 
   /// Parse new bytes and hand every complete reply to its owner
@@ -296,11 +316,11 @@ class RedisConnection {
         .expand((List<String> c) => c)
         .toList();
     if (channels.isNotEmpty) {
-      await sendCommand(<String>['SUBSCRIBE', ...channels]);
+      await _sendHandshake(<String>['SUBSCRIBE', ...channels]);
     }
     List<String> patterns = patternListeners.keys.toList();
     if (patterns.isNotEmpty) {
-      await sendCommand(<String>['PSUBSCRIBE', ...patterns]);
+      await _sendHandshake(<String>['PSUBSCRIBE', ...patterns]);
     }
   }
 
@@ -551,13 +571,19 @@ class RedisConnection {
       List<String> commands = username != null
           ? <String>['AUTH', username, password]
           : <String>['AUTH', password];
-      return await sendCommand(commands);
+      return await _sendHandshake(commands);
     }
   }
 
   /// Select database index
   Future<dynamic> _selectDatabaseIndex() async {
-    return await sendCommand(<String>['SELECT', option.db.toString()]);
+    return await _sendHandshake(<String>['SELECT', option.db.toString()]);
+  }
+
+  /// Send a command while connecting. It does not wait for the connect
+  /// (that would wait for itself), so it goes straight to the socket.
+  Future<dynamic> _sendHandshake(List<String> command) {
+    return _enqueue(command, null, _expectedReplies(command), false);
   }
 
   /// Build a SocketException for this connection.

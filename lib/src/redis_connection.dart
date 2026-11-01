@@ -159,9 +159,6 @@ class RedisConnection {
       /// listening for response
       _listenResponseFromRedis();
 
-      /// Once socket is connect reset retry count to zero
-      _totalRetry = 0;
-
       /// Status stays `connecting` until AUTH and SELECT are done.
       /// Other commands wait for this connect, so none of them can run
       /// before AUTH or on the wrong database.
@@ -172,6 +169,10 @@ class RedisConnection {
         onTimeout: _handshakeTimedOut,
       );
       _connectedBefore = true;
+
+      /// Reset the retry count only after the handshake works. A handshake
+      /// that fails (like LOADING) must still back off more each time.
+      _totalRetry = 0;
 
       /// Set status as connected
       status = RedisConnectionStatus.connected;

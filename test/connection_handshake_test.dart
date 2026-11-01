@@ -10,7 +10,9 @@ import 'package:test/test.dart';
 class FakeRedis {
   final ServerSocket server;
   final StringBuffer received = StringBuffer();
-  final Completer<Socket> client = Completer<Socket>();
+
+  /// Every client that connected, oldest first.
+  final List<Socket> clients = <Socket>[];
 
   FakeRedis(this.server) {
     server.listen(_onClient);
@@ -21,13 +23,15 @@ class FakeRedis {
   }
 
   void _onClient(Socket socket) {
-    if (!client.isCompleted) client.complete(socket);
-    socket.listen(_onData);
+    clients.add(socket);
+    socket.listen(_onData, onError: _ignore);
   }
 
   void _onData(List<int> data) {
     received.write(utf8.decode(data));
   }
+
+  void _ignore(Object error) {}
 
   /// Wait until the server got [text].
   Future<void> waitFor(String text) async {
@@ -37,12 +41,30 @@ class FakeRedis {
     expect(received.toString(), contains(text));
   }
 
+  /// Wait until [count] clients have connected.
+  Future<void> waitForClients(int count) async {
+    for (int i = 0; i < 200 && clients.length < count; i++) {
+      await Future<void>.delayed(Duration(milliseconds: 5));
+    }
+    expect(clients.length, count);
+  }
+
+  /// Write [text] to the newest client.
   Future<void> reply(String text) async {
-    (await client.future).write(text);
+    await waitForClients(clients.isEmpty ? 1 : clients.length);
+    clients.last.write(text);
+  }
+
+  /// Close the newest client, like a network drop.
+  void drop() {
+    received.clear();
+    clients.last.destroy();
   }
 
   Future<void> close() async {
-    if (client.isCompleted) (await client.future).destroy();
+    for (Socket socket in clients) {
+      socket.destroy();
+    }
     await server.close();
   }
 }
@@ -105,5 +127,36 @@ void main() {
     await Future<void>.delayed(Duration(milliseconds: 50));
     expect(fake.received.toString(), isNot(contains('SELECT')));
     expect(fake.received.toString(), isNot(contains('GET')));
+  });
+
+  test('failed AUTH on reconnect goes to onError, not a crash', () async {
+    FakeRedis fake = await FakeRedis.start();
+    addTearDown(fake.close);
+    List<dynamic> errors = <dynamic>[];
+    RedisConnection conn = RedisConnection(
+      RedisOptions(
+        port: fake.server.port,
+        password: 'secret',
+        onError: errors.add,
+      ),
+    );
+    addTearDown(conn.destroy);
+
+    Future<void> connecting = conn.connect();
+    await fake.waitFor('AUTH');
+    await fake.reply('+OK\r\n');
+    await fake.waitFor('SELECT');
+    await fake.reply('+OK\r\n');
+    await connecting;
+
+    // The password is changed on the server, then the network drops.
+    fake.drop();
+    await fake.waitForClients(2);
+    await fake.waitFor('AUTH');
+    await fake.reply('-WRONGPASS invalid username-password pair\r\n');
+
+    await Future<void>.delayed(Duration(milliseconds: 100));
+    expect(errors.whereType<RedisError>(), isNotEmpty);
+    expect(conn.status, RedisConnectionStatus.disconnected);
   });
 }

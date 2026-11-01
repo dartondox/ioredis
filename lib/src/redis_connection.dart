@@ -341,7 +341,13 @@ class RedisConnection {
     _failPending(error);
     _throwSafeError(error);
     if (_shouldReconnect) {
-      await connect();
+      /// Nobody waits for this reconnect, so its error (like a failed
+      /// AUTH) must go to onError. Thrown here, it would crash the app.
+      try {
+        await connect();
+      } catch (error) {
+        _throwSafeError(error);
+      }
     }
   }
 

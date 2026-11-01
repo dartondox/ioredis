@@ -76,6 +76,101 @@ class FakeRedis {
 }
 
 void main() {
+  test('the right password logs in with AUTH user password', () async {
+    FakeRedis fake = await FakeRedis.start();
+    addTearDown(fake.close);
+    fake.autoReply = '+OK\r\n';
+    RedisConnection conn = RedisConnection(
+      RedisOptions.fromUrl(
+        'redis://alice:s3cret@127.0.0.1:${fake.server.port}',
+      ),
+    );
+    addTearDown(conn.destroy);
+
+    await conn.connect();
+    expect(conn.status, RedisConnectionStatus.connected);
+    expect(
+      fake.received.toString(),
+      contains('*3\r\n\$4\r\nAUTH\r\n\$5\r\nalice\r\n\$6\r\ns3cret\r\n'),
+    );
+  });
+
+  test('a wrong password fails with the server error message', () async {
+    FakeRedis fake = await FakeRedis.start();
+    addTearDown(fake.close);
+    fake.autoReply = '-WRONGPASS invalid username-password pair\r\n';
+    RedisConnection conn = RedisConnection(
+      RedisOptions(port: fake.server.port, password: 'wrong'),
+    );
+    addTearDown(conn.destroy);
+
+    await expectLater(
+      conn.connect(),
+      throwsA(
+        isA<RedisError>().having(
+          (RedisError e) => e.message,
+          'message',
+          contains('WRONGPASS'),
+        ),
+      ),
+    );
+    expect(conn.status, RedisConnectionStatus.disconnected);
+  });
+
+  test('rediss:// connects over TLS and sends AUTH', () async {
+    if (!_hasOpenssl()) {
+      markTestSkipped('openssl is not installed');
+      return;
+    }
+
+    // A self-signed cert, made with openssl for this test only.
+    Directory dir = await Directory.systemTemp.createTemp('ioredis_tls');
+    addTearDown(() => dir.delete(recursive: true));
+    String args =
+        'req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost';
+    String keyFile = '${dir.path}/key.pem';
+    String certFile = '${dir.path}/cert.pem';
+    ProcessResult made = await Process.run('openssl', <String>[
+      ...args.split(' '),
+      '-keyout',
+      keyFile,
+      '-out',
+      certFile,
+    ]);
+    expect(made.exitCode, 0, reason: '${made.stderr}');
+
+    SecurityContext context = SecurityContext()
+      ..useCertificateChain(certFile)
+      ..usePrivateKey(keyFile);
+    SecureServerSocket server = await SecureServerSocket.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+      context,
+    );
+    addTearDown(server.close);
+    StringBuffer received = StringBuffer();
+    server.listen((SecureSocket socket) {
+      socket.listen((List<int> data) {
+        received.write(utf8.decode(data));
+        socket.write('+OK\r\n');
+      }, onError: (Object _) {});
+    });
+
+    bool sawBadCert = false;
+    RedisConnection conn = RedisConnection(
+      RedisOptions.fromUrl(
+        'rediss://:secret@127.0.0.1:${server.port}',
+        onBadCertificate: (X509Certificate cert) => sawBadCert = true,
+      ),
+    );
+    addTearDown(conn.destroy);
+
+    await conn.connect();
+    expect(conn.status, RedisConnectionStatus.connected);
+    expect(sawBadCert, isTrue);
+    expect(received.toString(), contains('AUTH\r\n\$6\r\nsecret'));
+  });
+
   test('commands wait until AUTH and SELECT are done', () async {
     FakeRedis fake = await FakeRedis.start();
     addTearDown(fake.close);
@@ -323,6 +418,14 @@ void main() {
     expect(fake.clients.length, 1);
     expect(conn.status, RedisConnectionStatus.disconnected);
   });
+}
+
+bool _hasOpenssl() {
+  try {
+    return Process.runSync('openssl', <String>['version']).exitCode == 0;
+  } on ProcessException {
+    return false;
+  }
 }
 
 void _ignoreError(dynamic error) {}

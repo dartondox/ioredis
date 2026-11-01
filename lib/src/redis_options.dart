@@ -1,7 +1,8 @@
 import 'dart:io';
 
 class RedisOptions {
-  /// timeout value for socket connection
+  /// timeout for the socket connect, and again for the handshake
+  /// (AUTH, SELECT and SUBSCRIBE again after a reconnect)
   final Duration connectTimeout;
 
   /// use secure socket

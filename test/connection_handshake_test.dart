@@ -205,6 +205,38 @@ void main() {
     expect(conn.status, RedisConnectionStatus.connected);
     expect(errors.whereType<RedisError>(), isNotEmpty);
   });
+
+  test('a handshake with no reply times out and tries again', () async {
+    FakeRedis fake = await FakeRedis.start();
+    addTearDown(fake.close);
+    List<dynamic> errors = <dynamic>[];
+    RedisConnection conn = RedisConnection(
+      RedisOptions(
+        port: fake.server.port,
+        password: 'secret',
+        connectTimeout: Duration(milliseconds: 200),
+        onError: errors.add,
+        retryStrategy: _fastRetry,
+      ),
+    );
+    addTearDown(conn.destroy);
+
+    // The first server never answers AUTH.
+    Future<void> connecting = conn.connect();
+    await fake.waitFor('AUTH');
+    fake.received.clear();
+
+    // After the timeout it gives up on that socket and uses a new one.
+    await Future<void>.delayed(Duration(milliseconds: 300));
+    await fake.waitForClients(2);
+    await fake.waitFor('AUTH');
+    await fake.reply('+OK\r\n');
+    await fake.waitFor('SELECT');
+    await fake.reply('+OK\r\n');
+    await connecting;
+    expect(conn.status, RedisConnectionStatus.connected);
+    expect(errors.whereType<SocketException>(), isNotEmpty);
+  });
 }
 
 Duration _fastRetry(int times) => Duration(milliseconds: 10);

@@ -165,14 +165,12 @@ class RedisConnection {
       /// Status stays `connecting` until AUTH and SELECT are done.
       /// Other commands wait for this connect, so none of them can run
       /// before AUTH or on the wrong database.
-      /// If username is provided, we need to login before calling other commands
-      await _login();
-
-      /// Select database index
-      await _selectDatabaseIndex();
-
-      /// After a reconnect, subscribe again to the same channels and patterns
-      if (_connectedBefore) await _resubscribe();
+      /// The handshake has its own connectTimeout, so a server that
+      /// never replies cannot hang the connect.
+      await _handshake().timeout(
+        option.connectTimeout,
+        onTimeout: _handshakeTimedOut,
+      );
       _connectedBefore = true;
 
       /// Set status as connected
@@ -218,6 +216,23 @@ class RedisConnection {
     if (error is! RedisError) return false;
     String code = error.message.split(' ').first;
     return _temporaryErrors.contains(code);
+  }
+
+  /// AUTH, SELECT, and SUBSCRIBE again after a reconnect.
+  Future<void> _handshake() async {
+    /// If username is provided, we need to login before calling other commands
+    await _login();
+
+    /// Select database index
+    await _selectDatabaseIndex();
+
+    /// After a reconnect, subscribe again to the same channels and patterns
+    if (_connectedBefore) await _resubscribe();
+  }
+
+  /// A SocketException, so the connect tries again like for a network error.
+  Never _handshakeTimedOut() {
+    throw _socketError('Redis handshake timed out');
   }
 
   /// Listen response from redis and sent to completer or callback.

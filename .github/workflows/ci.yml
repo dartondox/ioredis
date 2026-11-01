@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The Release workflow runs these tests on the tag first.
+  workflow_call:
 
 jobs:
   test:

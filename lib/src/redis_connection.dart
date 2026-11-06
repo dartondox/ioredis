@@ -160,6 +160,11 @@ class RedisConnection {
         /// but instead write each data chunk as an individual TCP packet.
         _redisSocket?.setOption(SocketOption.tcpNoDelay, true);
 
+        /// A failed write (like "Connection reset by peer") is reported on
+        /// socket.done. Without a handler it is an uncaught error that
+        /// kills the isolate.
+        _watchWriteErrors(_redisSocket!);
+
         /// listening for response
         _listenResponseFromRedis();
 
@@ -377,6 +382,19 @@ class RedisConnection {
     if (patterns.isNotEmpty) {
       await _sendHandshake(<String>['PSUBSCRIBE', ...patterns]);
     }
+  }
+
+  /// Handle an error from socket.done (a failed write).
+  /// Fail the waiting commands and close the socket. The read side then
+  /// ends, and _onDone (or the catch in _connect) reconnects as usual.
+  void _watchWriteErrors(Socket socket) {
+    socket.done.catchError((Object error) {
+      // An old socket that was already replaced. Nothing to do.
+      if (!identical(socket, _redisSocket)) return null;
+      _onSocketError(error);
+      socket.destroy();
+      return null;
+    });
   }
 
   void _onSocketError(Object error) {

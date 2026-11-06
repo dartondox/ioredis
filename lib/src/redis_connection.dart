@@ -206,6 +206,11 @@ class RedisConnection {
 
         if (error is SocketException) {
           _throwSafeError(_socketError(error.message));
+        } else if (error is OSError) {
+          /// When the server resets the connection during connect,
+          /// Socket.connect or setOption can throw a plain OSError.
+          /// It is a network error too, so try again.
+          _throwSafeError(_socketError(error.message));
         } else if (_isTemporary(error)) {
           /// The server is not ready yet, like LOADING after a restart.
           /// Try again with the normal backoff.

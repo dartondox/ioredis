@@ -18,7 +18,42 @@ void _answerClient(Socket client) {
   }, onError: (Object _) {});
 }
 
+/// A socket that fails like a socket the server reset during connect.
+/// setOption throws a plain OSError, not a SocketException.
+class _ResetSocket implements Socket {
+  @override
+  bool setOption(SocketOption option, bool enabled) {
+    throw OSError('Connection reset by peer', 54);
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
 void main() {
+  test('an OSError during connect is retried, not thrown', () async {
+    ServerSocket good = await ServerSocket.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    addTearDown(good.close);
+    good.listen(_answerClient);
+
+    List<Object> reported = <Object>[];
+    Redis redis = Redis(
+      RedisOptions(
+        port: good.port,
+        retryStrategy: (int times) => Duration(milliseconds: 10),
+        onError: (dynamic e) => reported.add(e as Object),
+      ),
+    )..setSocket(_ResetSocket());
+
+    // The first socket throws OSError. The retry makes a real socket.
+    expect(await redis.get('x').timeout(Duration(seconds: 5)), 'back');
+    expect(reported.single, isA<SocketException>());
+    redis.connection.destroy();
+  });
+
   test('a server that drops every client does not crash the app', () async {
     ServerSocket bad = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     bad.listen(_dropClient);

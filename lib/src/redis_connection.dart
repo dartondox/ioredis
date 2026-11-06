@@ -568,7 +568,11 @@ class RedisConnection {
     if (_encoder.length == 0) return;
     Socket? socket = _redisSocket;
     if (socket == null) {
+      /// The socket closed after these commands were queued (like during
+      /// the handshake). No reply can come, so fail them now. Else they
+      /// wait until the handshake timeout.
       _encoder.clear();
+      _failPending(_socketError('Redis disconnected'));
       return;
     }
     try {

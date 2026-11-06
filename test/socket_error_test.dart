@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ioredis/ioredis.dart';
 import 'package:test/test.dart';
@@ -30,7 +31,52 @@ class _ResetSocket implements Socket {
   dynamic noSuchMethod(Invocation invocation) => null;
 }
 
+/// A socket that the server closes right after connect, before the
+/// handshake sends SELECT.
+class _ClosedSocket implements Socket {
+  @override
+  bool setOption(SocketOption option, bool enabled) => true;
+
+  @override
+  Future<dynamic> get done => Completer<dynamic>().future;
+
+  @override
+  StreamSubscription<Uint8List> listen(
+    void Function(Uint8List event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) {
+    scheduleMicrotask(onDone!);
+    return Stream<Uint8List>.empty().listen(null);
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
 void main() {
+  test('a socket closed before the handshake is retried at once', () async {
+    ServerSocket good = await ServerSocket.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    addTearDown(good.close);
+    good.listen(_answerClient);
+
+    Redis redis = Redis(
+      RedisOptions(
+        port: good.port,
+        retryStrategy: (int times) => Duration(milliseconds: 10),
+        onError: (dynamic _) {},
+      ),
+    )..setSocket(_ClosedSocket());
+
+    // Before the fix, SELECT waited for the 10 second handshake timeout.
+    expect(await redis.get('x').timeout(Duration(seconds: 2)), 'back');
+    redis.connection.destroy();
+  });
+
   test('an OSError during connect is retried, not thrown', () async {
     ServerSocket good = await ServerSocket.bind(
       InternetAddress.loopbackIPv4,

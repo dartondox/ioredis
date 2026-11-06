@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Fix a crash when the server closes the connection right after connect,
+  like a Redis that is restarting. The next write failed with
+  `Connection reset by peer`, and nothing handled that error, so it killed
+  the app. Now the waiting commands fail and the client reconnects as usual.
 - New `RedisOptions.fromUrl(url)`. It reads the host, port, user, password
   and db from a `redis://` URL. A `rediss://` URL turns on TLS. Other
   options are named arguments. The db can also come from `?db=`. Other

@@ -160,6 +160,11 @@ class RedisConnection {
         /// but instead write each data chunk as an individual TCP packet.
         _redisSocket?.setOption(SocketOption.tcpNoDelay, true);
 
+        /// A failed write (like "Connection reset by peer") is reported on
+        /// socket.done. Without a handler it is an uncaught error that
+        /// kills the isolate.
+        _watchWriteErrors(_redisSocket!);
+
         /// listening for response
         _listenResponseFromRedis();
 
@@ -200,6 +205,11 @@ class RedisConnection {
         status = RedisConnectionStatus.disconnected;
 
         if (error is SocketException) {
+          _throwSafeError(_socketError(error.message));
+        } else if (error is OSError) {
+          /// When the server resets the connection during connect,
+          /// Socket.connect or setOption can throw a plain OSError.
+          /// It is a network error too, so try again.
           _throwSafeError(_socketError(error.message));
         } else if (_isTemporary(error)) {
           /// The server is not ready yet, like LOADING after a restart.
@@ -379,6 +389,19 @@ class RedisConnection {
     }
   }
 
+  /// Handle an error from socket.done (a failed write).
+  /// Fail the waiting commands and close the socket. The read side then
+  /// ends, and _onDone (or the catch in _connect) reconnects as usual.
+  void _watchWriteErrors(Socket socket) {
+    socket.done.catchError((Object error) {
+      // An old socket that was already replaced. Nothing to do.
+      if (!identical(socket, _redisSocket)) return null;
+      _onSocketError(error);
+      socket.destroy();
+      return null;
+    });
+  }
+
   void _onSocketError(Object error) {
     _throwSafeError(error);
     _failPending(error);
@@ -545,7 +568,11 @@ class RedisConnection {
     if (_encoder.length == 0) return;
     Socket? socket = _redisSocket;
     if (socket == null) {
+      /// The socket closed after these commands were queued (like during
+      /// the handshake). No reply can come, so fail them now. Else they
+      /// wait until the handshake timeout.
       _encoder.clear();
+      _failPending(_socketError('Redis disconnected'));
       return;
     }
     try {

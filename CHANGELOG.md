@@ -1,4 +1,4 @@
-## Unreleased
+## 3.0.2
 
 - Fix a crash when the server closes the connection right after connect,
   like a Redis that is restarting. The next write failed with

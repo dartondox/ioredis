@@ -1,5 +1,18 @@
-## Unreleased
+## 3.0.2
 
+- Fix: the client was marked connected before AUTH and SELECT were done. A
+  command sent in that gap could run before AUTH, or on database 0. Now the
+  client waits for AUTH, SELECT and the resubscribe first.
+- Fix: a failed AUTH on reconnect now goes to `onError`. Before, it could
+  crash the app.
+- Fix: the handshake now retries when the server is not ready yet (`LOADING`,
+  `BUSY`, `MASTERDOWN`, `TRYAGAIN`). A wrong password still throws.
+- Fix: the handshake now has a timeout (`connectTimeout`). Before, a server
+  that never answered made the connect hang forever.
+- Fix: the retry wait grows with each failed handshake, and retries run in a
+  loop, so a long run of retries no longer ends in a stack overflow.
+  `disconnect()` now stops a retry that is waiting.
+- CI: the tests run on a release tag before publishing.
 - Fix a crash when the server closes the connection right after connect,
   like a Redis that is restarting. The next write failed with
   `Connection reset by peer`, and nothing handled that error, so it killed

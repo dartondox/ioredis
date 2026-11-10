@@ -1,3 +1,14 @@
+## Unreleased
+
+- Fix: one socket failure could call `onError` two or three times (from the
+  stream, from `socket.done` and from the disconnect). Now it calls
+  `onError` once, with the first error.
+- Fix: `setSocket()` on a connected client did not use the new socket. Nothing
+  read its replies or watched it for write errors. Now the client closes the
+  old socket and connects on the new one, like a reconnect.
+- Fix: `connect()` threw when a fake socket given to `setSocket()` had no
+  `done` (it was null or threw). Now such a socket connects.
+
 ## 3.0.2
 
 - Fix: the client was marked connected before AUTH and SELECT were done. A

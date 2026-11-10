@@ -80,6 +80,11 @@ class RedisConnection {
 
   bool _keepBytes = false;
 
+  /// True after onError got an error of the current socket. One failure
+  /// can come as a stream error, a socket.done error and the stream end.
+  /// Only the first one goes to onError.
+  bool _socketFailed = false;
+
   RedisConnection([RedisOptions? opt]) {
     if (opt != null) {
       option = opt;
@@ -111,7 +116,23 @@ class RedisConnection {
 
   /// Set custom socket
   void setSocket(Socket socket) {
+    if (status != RedisConnectionStatus.connected) {
+      _redisSocket = socket;
+      return;
+    }
+
+    /// Connected: nothing would listen to the new socket or watch it for
+    /// write errors. So close the old socket and connect again on the new
+    /// one, like a reconnect. Cancel the listener first, so _onDone does
+    /// not run for the old socket.
+    _subscription?.cancel();
+    _subscription = null;
+    _redisSocket?.destroy();
     _redisSocket = socket;
+    _encoder.clear();
+    _failPending(_socketError('Redis disconnected'));
+    status = RedisConnectionStatus.disconnected;
+    unawaited(connect().catchError(_throwSafeError));
   }
 
   /// Connect to redis connection
@@ -134,6 +155,7 @@ class RedisConnection {
   Future<void> _connect() async {
     while (true) {
       _totalRetry++;
+      _socketFailed = false;
       try {
         status = RedisConnectionStatus.connecting;
 
@@ -205,12 +227,12 @@ class RedisConnection {
         status = RedisConnectionStatus.disconnected;
 
         if (error is SocketException) {
-          _throwSafeError(_socketError(error.message));
+          _reportSocketError(_socketError(error.message));
         } else if (error is OSError) {
           /// When the server resets the connection during connect,
           /// Socket.connect or setOption can throw a plain OSError.
           /// It is a network error too, so try again.
-          _throwSafeError(_socketError(error.message));
+          _reportSocketError(_socketError(error.message));
         } else if (_isTemporary(error)) {
           /// The server is not ready yet, like LOADING after a restart.
           /// Try again with the normal backoff.
@@ -393,7 +415,14 @@ class RedisConnection {
   /// Fail the waiting commands and close the socket. The read side then
   /// ends, and _onDone (or the catch in _connect) reconnects as usual.
   void _watchWriteErrors(Socket socket) {
-    socket.done.catchError((Object error) {
+    Future<dynamic> done;
+    try {
+      done = socket.done;
+    } catch (_) {
+      // A fake socket (like a test mock) with no done. Nothing to watch.
+      return;
+    }
+    done.catchError((Object error) {
       // An old socket that was already replaced. Nothing to do.
       if (!identical(socket, _redisSocket)) return null;
       _onSocketError(error);
@@ -403,8 +432,15 @@ class RedisConnection {
   }
 
   void _onSocketError(Object error) {
-    _throwSafeError(error);
+    _reportSocketError(error);
     _failPending(error);
+  }
+
+  /// Give a socket error to onError, but only the first one of a socket.
+  void _reportSocketError(Object error) {
+    if (_socketFailed) return;
+    _socketFailed = true;
+    _throwSafeError(error);
   }
 
   Future<void> _onDone() async {
@@ -417,7 +453,7 @@ class RedisConnection {
 
     SocketException error = _socketError('Redis disconnected');
     _failPending(error);
-    _throwSafeError(error);
+    _reportSocketError(error);
     if (_shouldReconnect) {
       /// Nobody waits for this reconnect, so its error (like a failed
       /// AUTH) must go to onError. Thrown here, it would crash the app.

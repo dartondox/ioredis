@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -55,7 +56,188 @@ class _ClosedSocket implements Socket {
   dynamic noSuchMethod(Invocation invocation) => null;
 }
 
+/// A socket the test controls. It answers SELECT with OK and nothing
+/// else, so a GET waits. The test fails it like Dart does on a reset.
+class _FakeSocket implements Socket {
+  final StreamController<Uint8List> input = StreamController<Uint8List>();
+  final Completer<dynamic> _done = Completer<dynamic>();
+
+  /// When false, SELECT gets no answer, so the handshake waits.
+  final bool answerSelect;
+
+  _FakeSocket({this.answerSelect = true});
+
+  /// A failed write: Dart reports it on socket.done.
+  void failWrite(Object error) => _done.completeError(error);
+
+  /// A failed read: Dart reports it on the stream, then ends the stream.
+  void failRead(Object error) {
+    input.addError(error);
+    input.close();
+  }
+
+  @override
+  bool setOption(SocketOption option, bool enabled) => true;
+
+  @override
+  Future<dynamic> get done => _done.future;
+
+  @override
+  StreamSubscription<Uint8List> listen(
+    void Function(Uint8List event)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) {
+    return input.stream.listen(onData, onError: onError, onDone: onDone);
+  }
+
+  @override
+  void add(List<int> data) {
+    if (answerSelect && utf8.decode(data).contains('SELECT')) {
+      input.add(Uint8List.fromList(utf8.encode('+OK\r\n')));
+    }
+  }
+
+  @override
+  void destroy() {
+    if (!input.isClosed) input.close();
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
+/// A fake socket like a mock with no `done`: it gives null.
+class _NoDoneSocket extends _FakeSocket {
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+
+  @override
+  Future<dynamic> get done => noSuchMethod(Invocation.getter(#done));
+}
+
+/// A fake socket whose `done` throws, like a mock with no stub.
+class _ThrowingDoneSocket extends _FakeSocket {
+  @override
+  Future<dynamic> get done =>
+      throw NoSuchMethodError.withInvocation(this, Invocation.getter(#done));
+}
+
+/// A Redis client on [socket]. A reconnect goes to [good].
+Redis _fakeClient(Socket socket, ServerSocket good, List<Object> reported) {
+  return Redis(
+    RedisOptions(
+      port: good.port,
+      retryStrategy: (int times) => Duration(milliseconds: 10),
+      onError: (dynamic e) => reported.add(e as Object),
+    ),
+  )..setSocket(socket);
+}
+
+Future<ServerSocket> _goodServer() async {
+  ServerSocket good = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  addTearDown(good.close);
+  good.listen(_answerClient);
+  return good;
+}
+
 void main() {
+  group('one socket failure calls onError once', () {
+    SocketException reset = SocketException('Connection reset by peer');
+
+    test('a failed write after connect', () async {
+      List<Object> reported = <Object>[];
+      _FakeSocket socket = _FakeSocket();
+      Redis redis = _fakeClient(socket, await _goodServer(), reported);
+      await redis.connect();
+      Future<dynamic> get = redis.get('x');
+      await Future<void>.delayed(Duration(milliseconds: 20));
+      socket.failWrite(reset);
+      await expectLater(get, throwsA(same(reset)));
+      await Future<void>.delayed(Duration(milliseconds: 200));
+      expect(reported, <Object>[same(reset)]);
+      expect(await redis.get('x'), 'back', reason: 'reconnected');
+      redis.connection.destroy();
+    });
+
+    test('a failed read and write after connect', () async {
+      List<Object> reported = <Object>[];
+      _FakeSocket socket = _FakeSocket();
+      Redis redis = _fakeClient(socket, await _goodServer(), reported);
+      await redis.connect();
+      Future<dynamic> get = redis.get('x');
+      await Future<void>.delayed(Duration(milliseconds: 20));
+      socket.failWrite(reset);
+      socket.failRead(reset);
+      await expectLater(get, throwsA(same(reset)));
+      await Future<void>.delayed(Duration(milliseconds: 200));
+      expect(reported, <Object>[same(reset)]);
+      redis.connection.destroy();
+    });
+
+    test('a failed write during the handshake', () async {
+      List<Object> reported = <Object>[];
+      _FakeSocket socket = _FakeSocket(answerSelect: false);
+      Redis redis = _fakeClient(socket, await _goodServer(), reported);
+      Future<dynamic> get = redis.get('x');
+      await Future<void>.delayed(Duration(milliseconds: 20));
+      socket.failWrite(reset);
+      expect(await get.timeout(Duration(seconds: 2)), 'back');
+      expect(reported, hasLength(1));
+      expect(reported.single, isA<SocketException>());
+      redis.connection.destroy();
+    });
+  });
+
+  test('setSocket on a connected connection watches the new socket', () async {
+    // The test fails on any uncaught error, like an unwatched socket.done.
+    List<Object> reported = <Object>[];
+    _FakeSocket second = _FakeSocket();
+    Redis redis = _fakeClient(_FakeSocket(), await _goodServer(), reported);
+    await redis.connect();
+    redis.setSocket(second);
+    // the next command runs on the new socket, after its handshake
+    Future<dynamic> get = redis.get('x');
+    await Future<void>.delayed(Duration(milliseconds: 20));
+    SocketException reset = SocketException('Connection reset by peer');
+    second.failWrite(reset);
+    await expectLater(get.timeout(Duration(seconds: 2)), throwsA(same(reset)));
+    await Future<void>.delayed(Duration(milliseconds: 100));
+    expect(reported, <Object>[same(reset)]);
+    expect(await redis.get('x'), 'back', reason: 'reconnected');
+    redis.connection.destroy();
+  });
+
+  test('setSocket with the socket in use keeps the connection', () async {
+    List<Object> reported = <Object>[];
+    _FakeSocket socket = _FakeSocket();
+    Redis redis = _fakeClient(socket, await _goodServer(), reported);
+    await redis.connect();
+    redis.setSocket(socket);
+    expect(redis.connection.status, RedisConnectionStatus.connected);
+    await Future<void>.delayed(Duration(milliseconds: 50));
+    expect(reported, isEmpty);
+    redis.connection.destroy();
+  });
+
+  for (_FakeSocket socket in <_FakeSocket>[
+    _NoDoneSocket(),
+    _ThrowingDoneSocket(),
+  ]) {
+    test(
+      'a fake socket with no done connects (${socket.runtimeType})',
+      () async {
+        List<Object> reported = <Object>[];
+        Redis redis = _fakeClient(socket, await _goodServer(), reported);
+        await redis.connect().timeout(Duration(seconds: 2));
+        expect(redis.connection.status, RedisConnectionStatus.connected);
+        expect(reported, isEmpty);
+        redis.connection.destroy();
+      },
+    );
+  }
+
   test('a socket closed before the handshake is retried at once', () async {
     ServerSocket good = await ServerSocket.bind(
       InternetAddress.loopbackIPv4,

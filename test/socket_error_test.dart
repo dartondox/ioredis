@@ -209,6 +209,18 @@ void main() {
     redis.connection.destroy();
   });
 
+  test('setSocket with the socket in use keeps the connection', () async {
+    List<Object> reported = <Object>[];
+    _FakeSocket socket = _FakeSocket();
+    Redis redis = _fakeClient(socket, await _goodServer(), reported);
+    await redis.connect();
+    redis.setSocket(socket);
+    expect(redis.connection.status, RedisConnectionStatus.connected);
+    await Future<void>.delayed(Duration(milliseconds: 50));
+    expect(reported, isEmpty);
+    redis.connection.destroy();
+  });
+
   for (_FakeSocket socket in <_FakeSocket>[
     _NoDoneSocket(),
     _ThrowingDoneSocket(),

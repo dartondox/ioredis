@@ -116,6 +116,8 @@ class RedisConnection {
 
   /// Set custom socket
   void setSocket(Socket socket) {
+    // the socket in use: nothing to change, and it must not be closed
+    if (identical(socket, _redisSocket)) return;
     if (status != RedisConnectionStatus.connected) {
       _redisSocket = socket;
       return;

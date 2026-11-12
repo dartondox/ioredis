@@ -13,8 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.11.0 is the lower bound in pubspec.yaml (test 1.33 needs it).
-        sdk: ['3.11.0', stable]
+        # 3.14.0 is the lower bound in pubspec.yaml (test 1.33 needs it).
+        sdk: ['3.14.0', stable]
 
     services:
       redis:

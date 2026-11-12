@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Ships an AI agent skill (ioredis-guide). Install it in your app with `dart run skills@ get`.
 - Requires Dart 3.14 or newer.
 - Fix: one socket failure could call `onError` two or three times (from the
   stream, from `socket.done` and from the disconnect). Now it calls

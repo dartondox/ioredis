@@ -445,14 +445,12 @@ void main() {
 
       List<Uint8List> got = <Uint8List>[];
       List<Uint8List> gotPattern = <Uint8List>[];
-      (await sub.subscribe(
-        channel,
-      )).onMessageBytes = (String ch, Uint8List message) {
+      (await sub.subscribe(channel))
+          .onMessageBytes = (String ch, Uint8List message) {
         got.add(message);
       };
-      (await sub.psubscribe(
-        '$channel.*',
-      )).onMessageBytes = (String ch, Uint8List message) {
+      (await sub.psubscribe('$channel.*'))
+          .onMessageBytes = (String ch, Uint8List message) {
         gotPattern.add(message);
       };
 

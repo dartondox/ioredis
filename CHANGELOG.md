@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Requires Dart 3.14 or newer.
 - Fix: one socket failure could call `onError` two or three times (from the
   stream, from `socket.done` and from the disconnect). Now it calls
   `onError` once, with the first error.

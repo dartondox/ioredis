@@ -11,7 +11,7 @@ description: Use when you connect to Redis from Dart with the ioredis package. C
 
 ```yaml
 dependencies:
-  ioredis: ^3.0.0
+  ioredis: ^3.2.0
 ```
 
 ```dart

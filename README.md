@@ -8,7 +8,7 @@ Redis client for dart.
 
 ```yaml
 dependencies:
-  ioredis: ^3.0.0
+  ioredis: ^3.2.0
 ```
 
 ## Features

@@ -154,6 +154,31 @@ try {
 }
 ```
 
+### Timeouts and the wait queue
+
+Commands have limits, so a Redis that is down or does not reply cannot hang
+your app forever.
+
+- `commandTimeout` (default 10 seconds): a command with no reply in this time
+  throws `RedisTimeoutError`. The wait for a connect counts too. When a sent
+  command times out, the client closes that connection, fails the other
+  commands on it, and reconnects. The command may still have run on the server.
+- `maxQueuedCommands` (default 10000): when this many commands already wait
+  for a connect, a new command throws `RedisQueueFullError` at once.
+- Blocking commands (BLPOP, BRPOP, BLMOVE, XREAD BLOCK, WAIT, ...) and
+  subscriber connections never time out.
+
+Both errors extend `RedisError`. Set an option to `null` to turn it off.
+
+```dart
+Redis redis = Redis(RedisOptions(
+  commandTimeout: Duration(seconds: 2),
+  maxQueuedCommands: 1000,
+));
+
+Redis noLimits = Redis(RedisOptions(commandTimeout: null, maxQueuedCommands: null));
+```
+
 ## Reply types
 
 - Integer replies are `int`.

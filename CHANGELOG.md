@@ -1,3 +1,7 @@
+## Unreleased
+
+- Change: a connection error that has no `onError` handler is now printed as `[redis] <error>`. It had no prefix.
+
 ## 3.2.0
 
 - Ships an AI agent skill (ioredis-guide). Install it in your app with `dart run skills@ get`.

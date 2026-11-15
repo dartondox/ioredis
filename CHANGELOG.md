@@ -1,5 +1,13 @@
 ## Unreleased
 
+- Faster: text with non-ASCII characters (like Burmese, accents or emoji) is
+  now written as UTF-8 straight into the send buffer. Before, each such value
+  was first encoded into its own list and then copied. The bytes on the wire
+  are the same as before.
+- Memory: the send buffer of a connection is now dropped after a flush when
+  it grew bigger than 256 KB. Before, one big command could keep up to 1 MB
+  per connection for ever.
+- Faster: the `+OK` reply no longer builds a new string each time.
 - Change: commands now have a timeout, on by default. A queue limit is new too (opt-in).
   - The problem: while Redis was down, or up but not replying, every command
     waited forever. Each waiting command kept its data in memory, and in a web

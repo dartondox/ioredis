@@ -149,7 +149,12 @@ class RedisParser {
         _end = next;
         return 0;
       case 0x2b: // '+' simple string
-        _value = _text(buf, pos + 1, lineEnd);
+        // "+OK" is the reply of SET and many other commands. Use one
+        // constant instead of decoding a new string each time.
+        _value =
+            lineEnd == pos + 3 && buf[pos + 1] == 0x4f && buf[pos + 2] == 0x4b
+            ? 'OK'
+            : _text(buf, pos + 1, lineEnd);
         _end = next;
         return 0;
       case 0x2d: // '-' error

@@ -108,8 +108,8 @@ class RedisConnection {
     }
   }
 
-  /// check connection is free (no command is waiting for a reply)
-  bool get isBusy => _pending.isNotEmpty;
+  /// check connection is free (no command waits for a reply or a connect)
+  bool get isBusy => _pending.isNotEmpty || _waiting.isNotEmpty;
 
   /// True while a blocking command (BLPOP, BRPOP, XREAD BLOCK, WAIT, ...)
   /// waits for its reply. Other commands should use another connection then.
@@ -624,6 +624,8 @@ class RedisConnection {
       _encoder.truncate(start);
       if (entry.blocking) _blocking--;
       entry.completer.completeError(error);
+      // The check timer may have started for this entry. Stop it if idle.
+      _stopSweepIfIdle();
       return;
     }
     _pending.add(entry);
@@ -643,6 +645,8 @@ class RedisConnection {
     int? max = option.maxQueuedCommands;
     if (max != null && _waiting.length >= max) {
       if (entry.blocking) _blocking--;
+      // The check timer may have started for this entry. Stop it if idle.
+      _stopSweepIfIdle();
       return Future<dynamic>.error(
         RedisQueueFullError(
           'Redis is not connected and $max commands already wait',
@@ -732,7 +736,8 @@ class RedisConnection {
       }
     }
     // Redis replies in order, so only the first sent command can be late
-    // on its own. When it is a blocking command, the others wait for it.
+    // on its own. When it is a blocking command, the others wait for it
+    // (as the docs say). Only the first sent command is checked.
     if (_pending.isNotEmpty) {
       int deadline = _pending.first.deadline;
       if (deadline >= 0 && deadline <= now) _drop(_timeoutError());

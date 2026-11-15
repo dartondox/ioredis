@@ -79,7 +79,7 @@ Redis _client(
   return redis;
 }
 
-const Duration _timeout = Duration(milliseconds: 200);
+const Duration _timeout = Duration(milliseconds: 400);
 
 void main() {
   group('commandTimeout', () {
@@ -109,6 +109,13 @@ void main() {
       await expectLater(redis.get('a'), throwsA(isA<RedisTimeoutError>()));
       await expectLater(redis.get('b'), throwsA(isA<RedisTimeoutError>()));
       expect(redis.connection.isBusy, isFalse);
+    });
+
+    test('a command that waits for a connect makes the client busy', () async {
+      Redis redis = _client(await _freePort(), commandTimeout: _timeout);
+      Future<dynamic> a = redis.get('a');
+      expect(redis.connection.isBusy, isTrue);
+      await expectLater(a, throwsA(isA<RedisTimeoutError>()));
     });
 
     test('a sent command fails when the server never replies', () async {
@@ -159,7 +166,7 @@ void main() {
         calls++;
         if (calls == 1) {
           Socket first = server.clients.last;
-          Timer(const Duration(milliseconds: 400), () {
+          Timer(const Duration(milliseconds: 1000), () {
             // The client closed this socket, so the write may fail.
             try {
               first.write('\$4\r\nlate\r\n');
@@ -172,7 +179,7 @@ void main() {
       Redis redis = _client(server.port, commandTimeout: _timeout);
       await expectLater(redis.get('a'), throwsA(isA<RedisTimeoutError>()));
       expect(await redis.get('b'), 'next');
-      await Future<void>.delayed(const Duration(milliseconds: 300));
+      await Future<void>.delayed(const Duration(milliseconds: 700));
       expect(await redis.get('c'), 'next');
     });
 
@@ -193,8 +200,10 @@ void main() {
       late _Server server;
       server = await _Server.start((String text) {
         Socket client = server.clients.last;
-        Timer(const Duration(milliseconds: 400), () {
-          client.write(':1\r\n');
+        // One reply for each command in this chunk, after the timeout.
+        int count = RegExp(r'\*\d+\r\n').allMatches(text).length;
+        Timer(const Duration(milliseconds: 1000), () {
+          client.write(':1\r\n' * count);
         });
         return null;
       });
@@ -208,9 +217,11 @@ void main() {
         <String>['XREAD', 'BLOCK', '0', 'STREAMS', 's', r'$'],
         <String>['WAIT', '1', '0'],
       ];
-      for (List<String> c in commands) {
-        expect(await redis.connection.sendCommand(c), 1, reason: c.first);
-      }
+      // All sent in one turn, so the waits run at the same time.
+      List<dynamic> replies = await Future.wait(
+        commands.map((List<String> c) => redis.connection.sendCommand(c)),
+      );
+      expect(replies, everyElement(1));
       // Nothing was dropped.
       expect(server.clients.length, 1);
       // XREAD without BLOCK is a normal command, so it times out.
@@ -241,14 +252,14 @@ void main() {
           if (!text.contains(kind)) return null;
           Socket client = server.clients.last;
           // The subscribe reply itself comes after the timeout.
-          Timer(const Duration(milliseconds: 400), () {
+          Timer(const Duration(milliseconds: 1000), () {
             client.write(
               pattern
                   ? '*3\r\n\$10\r\npsubscribe\r\n\$3\r\nch*\r\n:1\r\n'
                   : '*3\r\n\$9\r\nsubscribe\r\n\$2\r\nch\r\n:1\r\n',
             );
           });
-          Timer(const Duration(milliseconds: 800), () {
+          Timer(const Duration(milliseconds: 1600), () {
             client.write(
               pattern
                   ? '*4\r\n\$8\r\npmessage\r\n\$3\r\nch*\r\n\$2\r\nch\r\n\$2\r\nhi\r\n'

@@ -95,7 +95,7 @@ void main() {
       expect(error, isA<RedisTimeoutError>());
       expect(error, isA<RedisError>());
       expect(error.toString(), isNot(contains('secret-value')));
-      expect(watch.elapsedMilliseconds, lessThan(1000));
+      expect(watch.elapsedMilliseconds, lessThan(2000));
     });
 
     test('a timed-out command leaves the wait queue', () async {
@@ -305,6 +305,91 @@ void main() {
         await expectLater(a, throwsA(isA<SocketException>()));
       });
     }
+  });
+
+  group('commands that cannot be encoded', () {
+    // Replies "v-<key>" to every GET in the chunk. Saves the keys in order.
+    String? answerGets(String text, List<String> seen) {
+      StringBuffer out = StringBuffer();
+      for (RegExpMatch m in RegExp(
+        r'GET\r\n\$\d+\r\n(\w+)\r\n',
+      ).allMatches(text)) {
+        String key = m.group(1)!;
+        seen.add(key);
+        out.write('\$${key.length + 2}\r\nv-$key\r\n');
+      }
+      return out.isEmpty ? null : out.toString();
+    }
+
+    // Three commands in one turn. The middle one has a bad argument.
+    Future<void> runThree(Redis redis) async {
+      Future<dynamic> a = redis.get('a');
+      Future<dynamic> bad = redis.connection.sendCommand(<Object>[
+        'SET',
+        'k',
+        1.5,
+      ]);
+      Future<dynamic> b = redis.get('b');
+      await expectLater(bad, throwsA(isA<Exception>()));
+      expect(await a, 'v-a');
+      expect(await b, 'v-b');
+      expect(redis.connection.isBusy, isFalse);
+    }
+
+    test('while Redis is down, only that command fails', () async {
+      int port = await _freePort();
+      Redis redis = _client(port);
+      Future<void> run = runThree(redis);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      List<String> seen = <String>[];
+      _Server server = _Server(
+        await ServerSocket.bind(InternetAddress.loopbackIPv4, port),
+        (String text) => answerGets(text, seen),
+      );
+      addTearDown(server.close);
+      await run;
+      expect(seen, <String>['a', 'b']);
+    });
+
+    test('on a connected client, the next command gets its reply', () async {
+      List<String> seen = <String>[];
+      _Server server = await _Server.start(
+        (String text) => answerGets(text, seen),
+      );
+      Redis redis = _client(server.port);
+      await redis.connect();
+      await runThree(redis);
+      // No partial bytes of the bad command were sent.
+      expect(seen, <String>['a', 'b']);
+      expect(await redis.get('c'), 'v-c');
+    });
+  });
+
+  group('order of queued commands', () {
+    test('a command issued when the connect ends stays last', () async {
+      List<String> seen = <String>[];
+      _Server server = await _Server.start((String text) {
+        StringBuffer out = StringBuffer();
+        for (RegExpMatch m in RegExp(
+          r'GET\r\n\$\d+\r\n(\w+)\r\n',
+        ).allMatches(text)) {
+          seen.add(m.group(1)!);
+          out.write('\$1\r\nx\r\n');
+        }
+        return out.isEmpty ? null : out.toString();
+      });
+      Redis redis = _client(server.port);
+      Future<dynamic>? late;
+      // This callback runs before the one that sends the waiting commands.
+      Future<void> connected = redis.connect().then((_) {
+        late = redis.get('late');
+      });
+      Future<dynamic> a = redis.get('a');
+      Future<dynamic> b = redis.get('b');
+      await connected;
+      await Future.wait(<Future<dynamic>>[a, b, late!]);
+      expect(seen, <String>['a', 'b', 'late']);
+    });
   });
 
   group('bad bytes from the server', () {

@@ -20,6 +20,9 @@
 - Fix: a bad byte from the server (an unknown reply type) threw an uncaught
   error that could crash the app. Now the client drops the connection, fails
   the waiting commands with a `SocketException`, and reconnects.
+- Fix: a command with an argument that cannot be sent (like a `double`) while
+  Redis was down could stop the other waiting commands and steal the next
+  reply. Now only that command fails with the error. The others are sent.
 
 - Change: a connection error that has no `onError` handler is now printed as `[redis] <error>`. It had no prefix.
 

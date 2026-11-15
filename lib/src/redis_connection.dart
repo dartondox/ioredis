@@ -498,6 +498,7 @@ class RedisConnection {
     while (_pending.isNotEmpty) {
       _takeFirst().completer.completeError(error);
     }
+    _stopSweepIfIdle();
   }
 
   _PendingReply _takeFirst() {
@@ -511,6 +512,7 @@ class RedisConnection {
     _shouldReconnect = false;
     _shouldThrowErrorOnConnection = false;
     await _redisSocket?.close();
+    _stopSweepIfIdle();
   }
 
   /// Send QUIT, then close the connection without reconnect
@@ -531,6 +533,7 @@ class RedisConnection {
     _shouldReconnect = false;
     _shouldThrowErrorOnConnection = false;
     _redisSocket?.destroy();
+    _stopSweepIfIdle();
   }
 
   /// Send redis command and wait for its reply.
@@ -590,7 +593,10 @@ class RedisConnection {
       _sweepTimer ??= Timer.periodic(_sweepEvery(timeout), _sweep);
     }
     if (blocking) _blocking++;
-    if (status != RedisConnectionStatus.connected || _redisSocket == null) {
+    // Older commands may still wait for _sendWaiting. Stay behind them.
+    if (status != RedisConnectionStatus.connected ||
+        _redisSocket == null ||
+        _waiting.isNotEmpty) {
       return _connectThenSend(entry, command, pipeline);
     }
     _enqueue(entry, command, pipeline);
@@ -602,14 +608,25 @@ class RedisConnection {
     List<Object>? command,
     List<List<String>>? pipeline,
   ) {
-    _pending.add(entry);
-    if (command != null) {
-      _encoder.write(command);
-    } else {
-      for (int i = 0; i < pipeline!.length; i++) {
-        _encoder.write(pipeline[i]);
+    // Encode first. Add to _pending only when the encode worked, so a bad
+    // argument cannot leave an entry that steals the next reply.
+    int start = _encoder.length;
+    try {
+      if (command != null) {
+        _encoder.write(command);
+      } else {
+        for (int i = 0; i < pipeline!.length; i++) {
+          _encoder.write(pipeline[i]);
+        }
       }
+    } catch (error) {
+      // Remove the half-written bytes. Bytes of earlier commands stay.
+      _encoder.truncate(start);
+      if (entry.blocking) _blocking--;
+      entry.completer.completeError(error);
+      return;
     }
+    _pending.add(entry);
     // Auto-pipelining: write once, after the code of this turn is done.
     if (!_flushScheduled) {
       _flushScheduled = true;
@@ -635,12 +652,18 @@ class RedisConnection {
     entry.command = command;
     entry.pipeline = pipeline;
     _waiting.add(entry);
-    unawaited(connect().then<void>(_sendWaiting, onError: _failWaiting));
+    if (status == RedisConnectionStatus.connected && _redisSocket != null) {
+      // Already connected: no new connect. Send the waiting commands in
+      // order after this turn.
+      scheduleMicrotask(_sendWaiting);
+    } else {
+      unawaited(connect().then<void>(_sendWaiting, onError: _failWaiting));
+    }
     return entry.completer.future;
   }
 
   /// The connect is done: send all waiting commands, in order.
-  void _sendWaiting(void _) {
+  void _sendWaiting([void _]) {
     if (_redisSocket == null) {
       _failWaiting(_socketError('Redis is not connected'));
       return;
@@ -659,6 +682,16 @@ class RedisConnection {
   void _failWaiting(Object error) {
     while (_waiting.isNotEmpty) {
       _failWaitingEntry(_waiting.removeFirst(), error);
+    }
+    _stopSweepIfIdle();
+  }
+
+  /// Stop the check timer when no command waits, so it does not keep the
+  /// process alive.
+  void _stopSweepIfIdle() {
+    if (_pending.isEmpty && _waiting.isEmpty) {
+      _sweepTimer?.cancel();
+      _sweepTimer = null;
     }
   }
 

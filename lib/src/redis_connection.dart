@@ -723,7 +723,7 @@ class RedisConnection {
     if (onError != null) {
       onError(err);
     } else {
-      print(err.toString());
+      print('[redis] ${err.toString()}');
     }
   }
 }

@@ -17,6 +17,17 @@ void main() {
       );
     });
 
+    test('simple strings near OK are read in full', () {
+      RedisParser p = RedisParser();
+      expect(p.feed(b('+O\r\n+OKAY\r\n+OX\r\n+\r\n+OK\r\n')), <dynamic>[
+        'O',
+        'OKAY',
+        'OX',
+        '',
+        'OK',
+      ]);
+    });
+
     test('reply split over many chunks, one byte at a time', () {
       RedisParser p = RedisParser();
       List<int> bytes = b('*2\r\n\$5\r\nhello\r\n:-7\r\n');

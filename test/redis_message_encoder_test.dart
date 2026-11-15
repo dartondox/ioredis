@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:ioredis/src/redis_message_encoder.dart';
@@ -206,6 +207,68 @@ void main() {
       expect(e.takeBytes(), ref(big));
       e.write(<String>['SET', 'k', 'é' * 10]);
       expect(e.takeBytes(), ref(<String>['SET', 'k', 'é' * 10]));
+    });
+  });
+
+  group('long strings and memory', () {
+    test('one non-ASCII char near the start and the end keeps memory low', () {
+      String big = 'é${'a' * (10 * 1024 * 1024)}é';
+      RedisMessageEncoder e = RedisMessageEncoder();
+      e.write(big);
+      int size = e.length;
+      expect(e.debugCapacity, lessThan(size * 1.5));
+      expect(e.takeBytes(), ref(big));
+    });
+
+    test('pairs and lone surrogates across the threshold', () {
+      for (int len in <int>[4090, 4096, 4097, 4100, 9000]) {
+        for (int at = len - 3; at <= len + 1; at++) {
+          String pair = String.fromCharCodes(<int>[0xd83d, 0xde00]);
+          for (String odd in <String>[pair, '\ud83d', '\ude00', '€']) {
+            String s = 'é${'a' * (at - 1)}$odd${'b' * 10}';
+            expectSame(<Object?>[s]);
+            expectSame(<Object?>[
+              <Object?>['SET', s],
+            ]);
+          }
+        }
+      }
+    });
+
+    test('random strings match utf8.encode', () {
+      Random r = Random(42);
+      List<String> parts = <String>[
+        'a',
+        'z',
+        '0',
+        ' ',
+        'é',
+        'ß',
+        '€',
+        '日',
+        '\u{1F600}',
+        '\ud83d',
+        '\ude00',
+      ];
+      String make(int count) {
+        StringBuffer b = StringBuffer();
+        for (int i = 0; i < count; i++) {
+          b.write(parts[r.nextInt(parts.length)]);
+        }
+        return b.toString();
+      }
+
+      RedisMessageEncoder e = RedisMessageEncoder();
+      for (int i = 0; i < 4000; i++) {
+        String s = make(r.nextInt(40));
+        e.write(s);
+        expect(e.takeBytes(), ref(s), reason: 'units: ${s.codeUnits}');
+      }
+      for (int i = 0; i < 300; i++) {
+        String s = make(4090 + r.nextInt(200));
+        e.write(<Object?>[s]);
+        expect(e.takeBytes(), ref(<Object?>[s]));
+      }
     });
   });
 }

@@ -11,7 +11,18 @@ class RedisMessageEncoder {
   /// keep their buffer and do not grow it again each time.
   static const int _keepLimit = 256 * 1024;
 
+  /// Above this many UTF-16 units, count the exact UTF-8 size before
+  /// reserving space. Below it, the 3 bytes per unit worst case is fine.
+  static const int _exactCountLimit = 4096;
+
+  /// Above this size, the buffer grows to the size needed (plus a little)
+  /// and not to the next power of 2.
+  static const int _doubleLimit = 1024 * 1024;
+
   Uint8List _buffer = Uint8List(_initialSize);
+
+  /// Size of the buffer. Only for tests.
+  int get debugCapacity => _buffer.length;
 
   int _length = 0;
 
@@ -112,9 +123,16 @@ class RedisMessageEncoder {
   void _writeBulkUtf8(String value, int start, int pos, int index) {
     int n = value.length;
     // One UTF-16 unit is at most 3 bytes (a pair of 2 units is 4 bytes).
+    // For a long rest, the worst case could reserve 3 times the size.
+    // So count the exact bytes first. The count is cheap.
     // The header can get one more digit; 24 bytes leave room for it.
     _length = pos;
-    _ensure((n - index) * 3 + 24);
+    _ensure(
+      (n - index > _exactCountLimit
+              ? _utf8Length(value, index)
+              : (n - index) * 3) +
+          24,
+    );
     Uint8List buf = _buffer;
     for (int i = index; i < n; i++) {
       int c = value.codeUnitAt(i);
@@ -159,6 +177,30 @@ class RedisMessageEncoder {
     buf[pos++] = 0x0d;
     buf[pos++] = 0x0a;
     _length = pos;
+  }
+
+  /// Exact UTF-8 byte count of value from [index], same rules as the writer.
+  static int _utf8Length(String value, int index) {
+    int n = value.length;
+    int total = 0;
+    for (int i = index; i < n; i++) {
+      int c = value.codeUnitAt(i);
+      if (c < 0x80) {
+        total += 1;
+      } else if (c < 0x800) {
+        total += 2;
+      } else if ((c & 0xf800) != 0xd800) {
+        total += 3;
+      } else if (c < 0xdc00 &&
+          i + 1 < n &&
+          (value.codeUnitAt(i + 1) & 0xfc00) == 0xdc00) {
+        total += 4;
+        i++;
+      } else {
+        total += 3;
+      }
+    }
+    return total;
   }
 
   /// Size of `$<length>\r\n` for a length of zero or more.
@@ -219,9 +261,14 @@ class RedisMessageEncoder {
   void _ensure(int extra) {
     int needed = _length + extra;
     if (needed <= _buffer.length) return;
-    int size = _buffer.length * 2;
-    while (size < needed) {
-      size *= 2;
+    int size;
+    if (needed > _doubleLimit) {
+      size = needed + (needed >> 3);
+    } else {
+      size = _buffer.length * 2;
+      while (size < needed) {
+        size *= 2;
+      }
     }
     Uint8List bigger = Uint8List(size);
     bigger.setRange(0, _length, _buffer);

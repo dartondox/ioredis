@@ -55,6 +55,27 @@ class RedisOptions {
   /// cause the connection to be aborted.
   bool Function(X509Certificate)? onBadCertificate;
 
+  /// Most time a command waits for its reply, counted from the call.
+  /// It covers the wait for a connect too. After it, the command fails
+  /// with [RedisTimeoutError]. Default 10 seconds.
+  /// `null` or [Duration.zero] turns it off (wait forever).
+  ///
+  /// A sent command that times out closes its connection, and the other
+  /// commands that wait on that connection fail with the same error.
+  /// A late reply would else go to the wrong command. The client then
+  /// reconnects. A timed-out command may still have run on the server.
+  ///
+  /// Blocking commands (BLPOP, BRPOP, XREAD BLOCK, WAIT, ...) have no
+  /// limit, and commands sent behind one on the same connection wait for
+  /// it. Commands on a subscriber connection (after SUBSCRIBE or
+  /// PSUBSCRIBE) have no limit either.
+  final Duration? commandTimeout;
+
+  /// Most commands that may wait for a connect at one time, per connection.
+  /// One more command fails at once with [RedisQueueFullError].
+  /// Default `null`: no limit. Set it to turn the limit on.
+  final int? maxQueuedCommands;
+
   RedisOptions({
     this.keyPrefix = '',
     this.host = '127.0.0.1',
@@ -69,7 +90,12 @@ class RedisOptions {
     this.maxConnection = 10,
     this.idleTimeout = const Duration(seconds: 10),
     this.onBadCertificate,
+    this.commandTimeout = defaultCommandTimeout,
+    this.maxQueuedCommands,
   });
+
+  /// Default of [commandTimeout].
+  static const Duration defaultCommandTimeout = Duration(seconds: 10);
 
   /// Make options from a `redis://` or `rediss://` URL.
   ///
@@ -96,6 +122,8 @@ class RedisOptions {
     int maxConnection = 10,
     Duration idleTimeout = const Duration(seconds: 10),
     bool Function(X509Certificate)? onBadCertificate,
+    Duration? commandTimeout = defaultCommandTimeout,
+    int? maxQueuedCommands,
   }) {
     // The URL can hold a password, so errors only show a redacted copy.
     String safeUrl = url.replaceFirst(RegExp(r'//.*@'), '//***@');
@@ -149,6 +177,8 @@ class RedisOptions {
       maxConnection: maxConnection,
       idleTimeout: idleTimeout,
       onBadCertificate: onBadCertificate,
+      commandTimeout: commandTimeout,
+      maxQueuedCommands: maxQueuedCommands,
     );
   }
 }

@@ -25,6 +25,14 @@ class _PendingReply {
   /// Replies so far. Only used when more than one reply is expected.
   List<dynamic>? replies;
 
+  /// Time on [RedisConnection._clock] (ms) when this command times out.
+  /// -1: no limit.
+  int deadline = -1;
+
+  /// The command, kept only while it waits for a connect.
+  List<Object>? command;
+  List<List<String>>? pipeline;
+
   _PendingReply(this.expected, this.isPipeline, this.blocking);
 }
 
@@ -47,6 +55,15 @@ class RedisConnection {
   /// Commands that wait for a reply, in the order they were sent.
   /// Redis answers in the same order, so the first reply belongs to the first entry.
   final Queue<_PendingReply> _pending = Queue<_PendingReply>();
+
+  /// Commands that wait for a connect. They are not written yet.
+  final Queue<_PendingReply> _waiting = Queue<_PendingReply>();
+
+  /// Checks command deadlines. Runs only while commands wait.
+  Timer? _sweepTimer;
+
+  /// Cheap clock for deadlines (no DateTime per command)
+  static final Stopwatch _clock = Stopwatch()..start();
 
   /// Parser for the bytes of the current socket
   RedisParser _parser = RedisParser();
@@ -91,8 +108,8 @@ class RedisConnection {
     }
   }
 
-  /// check connection is free (no command is waiting for a reply)
-  bool get isBusy => _pending.isNotEmpty;
+  /// check connection is free (no command waits for a reply or a connect)
+  bool get isBusy => _pending.isNotEmpty || _waiting.isNotEmpty;
 
   /// True while a blocking command (BLPOP, BRPOP, XREAD BLOCK, WAIT, ...)
   /// waits for its reply. Other commands should use another connection then.
@@ -303,7 +320,16 @@ class RedisConnection {
 
   /// Parse new bytes and hand every complete reply to its owner
   void _onData(List<int> data) {
-    List<dynamic> replies = _parser.feed(data);
+    List<dynamic> replies;
+    try {
+      replies = _parser.feed(data);
+    } on FormatException catch (e) {
+      /// Bad bytes from the server. Thrown here, it would be an uncaught
+      /// error that kills the isolate. The parser state is broken too,
+      /// so drop the connection like a network error.
+      _drop(_socketError('Bad reply from Redis: ${e.message}'));
+      return;
+    }
     for (int i = 0; i < replies.length; i++) {
       dynamic reply = replies[i];
       if (reply is List && _dispatchPushMessage(reply)) continue;
@@ -472,6 +498,7 @@ class RedisConnection {
     while (_pending.isNotEmpty) {
       _takeFirst().completer.completeError(error);
     }
+    _stopSweepIfIdle();
   }
 
   _PendingReply _takeFirst() {
@@ -485,6 +512,7 @@ class RedisConnection {
     _shouldReconnect = false;
     _shouldThrowErrorOnConnection = false;
     await _redisSocket?.close();
+    _stopSweepIfIdle();
   }
 
   /// Send QUIT, then close the connection without reconnect
@@ -505,6 +533,7 @@ class RedisConnection {
     _shouldReconnect = false;
     _shouldThrowErrorOnConnection = false;
     _redisSocket?.destroy();
+    _stopSweepIfIdle();
   }
 
   /// Send redis command and wait for its reply.
@@ -552,52 +581,189 @@ class RedisConnection {
     int expected,
     bool blocking,
   ) {
-    if (blocking) _blocking++;
-    if (status != RedisConnectionStatus.connected || _redisSocket == null) {
-      return _connectThenSend(command, pipeline, expected, blocking);
+    _PendingReply entry = _PendingReply(expected, pipeline != null, blocking);
+    Duration? timeout = option.commandTimeout;
+    // Blocking commands and subscriber connections ([keepBytes] is on
+    // after SUBSCRIBE or PSUBSCRIBE) wait on purpose: no deadline.
+    if (timeout != null &&
+        !blocking &&
+        !_keepBytes &&
+        timeout > Duration.zero) {
+      entry.deadline = _clock.elapsedMilliseconds + timeout.inMilliseconds;
+      _sweepTimer ??= Timer.periodic(_sweepEvery(timeout), _sweep);
     }
-    return _enqueue(command, pipeline, expected, blocking);
+    if (blocking) _blocking++;
+    // Older commands may still wait for _sendWaiting. Stay behind them.
+    if (status != RedisConnectionStatus.connected ||
+        _redisSocket == null ||
+        _waiting.isNotEmpty) {
+      return _connectThenSend(entry, command, pipeline);
+    }
+    _enqueue(entry, command, pipeline);
+    return entry.completer.future;
   }
 
-  Future<dynamic> _enqueue(
+  void _enqueue(
+    _PendingReply entry,
     List<Object>? command,
     List<List<String>>? pipeline,
-    int expected,
-    bool blocking,
   ) {
-    _PendingReply entry = _PendingReply(expected, pipeline != null, blocking);
-    _pending.add(entry);
-    if (command != null) {
-      _encoder.write(command);
-    } else {
-      for (int i = 0; i < pipeline!.length; i++) {
-        _encoder.write(pipeline[i]);
+    // Encode first. Add to _pending only when the encode worked, so a bad
+    // argument cannot leave an entry that steals the next reply.
+    int start = _encoder.length;
+    try {
+      if (command != null) {
+        _encoder.write(command);
+      } else {
+        for (int i = 0; i < pipeline!.length; i++) {
+          _encoder.write(pipeline[i]);
+        }
       }
+    } catch (error) {
+      // Remove the half-written bytes. Bytes of earlier commands stay.
+      _encoder.truncate(start);
+      if (entry.blocking) _blocking--;
+      entry.completer.completeError(error);
+      // The check timer may have started for this entry. Stop it if idle.
+      _stopSweepIfIdle();
+      return;
     }
+    _pending.add(entry);
     // Auto-pipelining: write once, after the code of this turn is done.
     if (!_flushScheduled) {
       _flushScheduled = true;
       scheduleMicrotask(_flush);
     }
+  }
+
+  /// Keep the command until the connect is done, then send it.
+  Future<dynamic> _connectThenSend(
+    _PendingReply entry,
+    List<Object>? command,
+    List<List<String>>? pipeline,
+  ) {
+    int? max = option.maxQueuedCommands;
+    if (max != null && _waiting.length >= max) {
+      if (entry.blocking) _blocking--;
+      // The check timer may have started for this entry. Stop it if idle.
+      _stopSweepIfIdle();
+      return Future<dynamic>.error(
+        RedisQueueFullError(
+          'Redis is not connected and $max commands already wait',
+        ),
+      );
+    }
+    entry.command = command;
+    entry.pipeline = pipeline;
+    _waiting.add(entry);
+    if (status == RedisConnectionStatus.connected && _redisSocket != null) {
+      // Already connected: no new connect. Send the waiting commands in
+      // order after this turn.
+      scheduleMicrotask(_sendWaiting);
+    } else {
+      unawaited(connect().then<void>(_sendWaiting, onError: _failWaiting));
+    }
     return entry.completer.future;
   }
 
-  Future<dynamic> _connectThenSend(
-    List<Object>? command,
-    List<List<String>>? pipeline,
-    int expected,
-    bool blocking,
-  ) async {
-    try {
-      await connect();
-      if (_redisSocket == null) {
-        throw _socketError('Redis is not connected');
-      }
-    } catch (_) {
-      if (blocking) _blocking--;
-      rethrow;
+  /// The connect is done: send all waiting commands, in order.
+  void _sendWaiting([void _]) {
+    if (_redisSocket == null) {
+      _failWaiting(_socketError('Redis is not connected'));
+      return;
     }
-    return _enqueue(command, pipeline, expected, blocking);
+    while (_waiting.isNotEmpty) {
+      _PendingReply entry = _waiting.removeFirst();
+      List<Object>? command = entry.command;
+      List<List<String>>? pipeline = entry.pipeline;
+      entry.command = null;
+      entry.pipeline = null;
+      _enqueue(entry, command, pipeline);
+    }
+  }
+
+  /// The connect failed for good: fail all waiting commands.
+  void _failWaiting(Object error) {
+    while (_waiting.isNotEmpty) {
+      _failWaitingEntry(_waiting.removeFirst(), error);
+    }
+    _stopSweepIfIdle();
+  }
+
+  /// Stop the check timer when no command waits, so it does not keep the
+  /// process alive.
+  void _stopSweepIfIdle() {
+    if (_pending.isEmpty && _waiting.isEmpty) {
+      _sweepTimer?.cancel();
+      _sweepTimer = null;
+    }
+  }
+
+  void _failWaitingEntry(_PendingReply entry, Object error) {
+    if (entry.blocking) _blocking--;
+    entry.command = null;
+    entry.pipeline = null;
+    entry.completer.completeError(error);
+  }
+
+  /// How often to check deadlines. A command fails at most a tenth of
+  /// [timeout] late.
+  /// ponytail: one fixed check interval per connection, set by the first
+  /// timed command. A one-shot timer at the next deadline is the upgrade
+  /// if the late margin ever matters.
+  static Duration _sweepEvery(Duration timeout) {
+    int ms = timeout.inMilliseconds ~/ 10;
+    return Duration(milliseconds: ms < 1 ? 1 : ms);
+  }
+
+  /// Fail commands that are past their deadline.
+  void _sweep(Timer timer) {
+    if (_pending.isEmpty && _waiting.isEmpty) {
+      timer.cancel();
+      _sweepTimer = null;
+      return;
+    }
+    int now = _clock.elapsedMilliseconds;
+    // ponytail: scans all waiting commands each check. Fine for the few
+    // thousand that can wait; set maxQueuedCommands to cap it.
+    // One pass that keeps the order of the commands that stay.
+    for (int i = _waiting.length; i > 0; i--) {
+      _PendingReply e = _waiting.removeFirst();
+      if (e.deadline >= 0 && e.deadline <= now) {
+        _failWaitingEntry(e, _timeoutError());
+      } else {
+        _waiting.add(e);
+      }
+    }
+    // Redis replies in order, so only the first sent command can be late
+    // on its own. When it is a blocking command, the others wait for it
+    // (as the docs say). Only the first sent command is checked.
+    if (_pending.isNotEmpty) {
+      int deadline = _pending.first.deadline;
+      if (deadline >= 0 && deadline <= now) _drop(_timeoutError());
+    }
+  }
+
+  RedisTimeoutError _timeoutError() {
+    return RedisTimeoutError(
+      'Redis command got no reply within '
+      '${option.commandTimeout!.inMilliseconds} ms',
+    );
+  }
+
+  /// Close this connection, fail the commands that wait on it, and
+  /// reconnect. A late reply on this socket would go to the wrong command,
+  /// so the socket cannot be used again.
+  void _drop(Object error) {
+    _subscription?.cancel();
+    _subscription = null;
+    _redisSocket?.destroy();
+    _redisSocket = null;
+    _encoder.clear();
+    _failPending(error);
+    _reportSocketError(error);
+    status = RedisConnectionStatus.disconnected;
+    if (_shouldReconnect) unawaited(connect().catchError(_throwSafeError));
   }
 
   /// Write all queued command bytes in one socket write.
@@ -696,8 +862,15 @@ class RedisConnection {
 
   /// Send a command while connecting. It does not wait for the connect
   /// (that would wait for itself), so it goes straight to the socket.
+  /// It has no command deadline: connectTimeout covers the handshake.
   Future<dynamic> _sendHandshake(List<String> command) {
-    return _enqueue(command, null, _expectedReplies(command), false);
+    _PendingReply entry = _PendingReply(
+      _expectedReplies(command),
+      false,
+      false,
+    );
+    _enqueue(entry, command, null);
+    return entry.completer.future;
   }
 
   /// Build a SocketException for this connection.

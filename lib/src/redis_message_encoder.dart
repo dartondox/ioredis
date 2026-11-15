@@ -33,6 +33,12 @@ class RedisMessageEncoder {
     return bytes;
   }
 
+  /// Drop the bytes written after [length]. Used to undo a half-written
+  /// command.
+  void truncate(int length) {
+    if (length < _length) _length = length;
+  }
+
   /// Drop all written bytes.
   void clear() {
     _length = 0;

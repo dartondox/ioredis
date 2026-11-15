@@ -15,3 +15,21 @@ class RedisError implements Exception {
   @override
   String toString() => 'RedisError: $message';
 }
+
+/// A command got no reply within [RedisOptions.commandTimeout].
+/// The message never holds the command arguments.
+class RedisTimeoutError extends RedisError {
+  const RedisTimeoutError(super.message);
+
+  @override
+  String toString() => 'RedisTimeoutError: $message';
+}
+
+/// [RedisOptions.maxQueuedCommands] commands already wait for a
+/// connection, so this command was not queued.
+class RedisQueueFullError extends RedisError {
+  const RedisQueueFullError(super.message);
+
+  @override
+  String toString() => 'RedisQueueFullError: $message';
+}

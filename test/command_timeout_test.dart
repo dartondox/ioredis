@@ -62,7 +62,7 @@ Future<int> _freePort() async {
 Redis _client(
   int port, {
   Duration? commandTimeout = RedisOptions.defaultCommandTimeout,
-  int? maxQueuedCommands = RedisOptions.defaultMaxQueuedCommands,
+  int? maxQueuedCommands,
   Duration connectTimeout = const Duration(seconds: 2),
 }) {
   Redis redis = Redis(
@@ -285,22 +285,18 @@ void main() {
   });
 
   group('defaults', () {
-    test('limits are on by default', () {
+    test('timeout is on by default, queue limit is off', () {
       RedisOptions o = RedisOptions();
       expect(o.commandTimeout, const Duration(seconds: 10));
-      expect(o.maxQueuedCommands, 10000);
+      expect(o.maxQueuedCommands, isNull);
       RedisOptions u = RedisOptions.fromUrl('redis://localhost');
       expect(u.commandTimeout, const Duration(seconds: 10));
-      expect(u.maxQueuedCommands, 10000);
+      expect(u.maxQueuedCommands, isNull);
     });
 
     for (Duration? off in <Duration?>[null, Duration.zero]) {
       test('commandTimeout $off turns it off', () async {
-        Redis redis = _client(
-          await _freePort(),
-          commandTimeout: off,
-          maxQueuedCommands: null,
-        );
+        Redis redis = _client(await _freePort(), commandTimeout: off);
         bool done = false;
         Future<dynamic> a = redis.get('a').whenComplete(() => done = true);
         await Future<void>.delayed(const Duration(milliseconds: 500));

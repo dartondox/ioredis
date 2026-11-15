@@ -52,7 +52,7 @@ Redis redis = Redis(RedisOptions.fromUrl('rediss://user:pass@example.com:6380/2'
 | `maxConnection` | `10` | most connections, main one included |
 | `idleTimeout` | 10 s | close an unused pool connection after this |
 | `commandTimeout` | 10 s | a command with no reply in this time throws `RedisTimeoutError`. Blocking commands and subscriber connections have no limit. `null` turns it off. |
-| `maxQueuedCommands` | `10000` | most commands that wait for a connect. One more throws `RedisQueueFullError`. `null` turns it off. |
+| `maxQueuedCommands` | `null` (off) | most commands that wait for a connect. One more throws `RedisQueueFullError`. |
 
 `RedisOptions.fromUrl`:
 

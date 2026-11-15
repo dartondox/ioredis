@@ -1,6 +1,6 @@
 ## Unreleased
 
-- Change: commands now have limits, and they are on by default.
+- Change: commands now have a timeout, on by default. A queue limit is new too (opt-in).
   - The problem: while Redis was down, or up but not replying, every command
     waited forever. Each waiting command kept its data in memory, and in a web
     app the HTTP request behind it hung too. Memory grew without limit.
@@ -9,12 +9,13 @@
     When a sent command times out, the client closes that connection, fails
     the other commands that wait on it with the same error, and reconnects.
     A late reply could else go to the wrong command.
-  - `maxQueuedCommands` (default 10000): when this many commands already wait
-    for a connect, a new command fails at once with `RedisQueueFullError`.
+  - `maxQueuedCommands` (default `null`, off): set it to cap the commands that
+    wait for a connect. One more fails at once with `RedisQueueFullError`.
   - Blocking commands (BLPOP, BRPOP, BLMOVE, BZPOPMIN, XREAD BLOCK, WAIT, ...)
     and subscriber connections (SUBSCRIBE, PSUBSCRIBE) never time out.
-  - To turn them off: `RedisOptions(commandTimeout: null, maxQueuedCommands: null)`.
-    `commandTimeout: Duration.zero` also turns the timeout off.
+  - To turn the timeout off: `RedisOptions(commandTimeout: null)`.
+    `commandTimeout: Duration.zero` also turns it off. To turn the queue limit
+    on: `RedisOptions(maxQueuedCommands: 1000)`.
   - Both errors extend `RedisError`. Their text never holds command arguments.
 - Fix: a bad byte from the server (an unknown reply type) threw an uncaught
   error that could crash the app. Now the client drops the connection, fails

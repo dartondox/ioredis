@@ -73,7 +73,7 @@ class RedisOptions {
 
   /// Most commands that may wait for a connect at one time, per connection.
   /// One more command fails at once with [RedisQueueFullError].
-  /// Default 10000. `null` turns it off (no limit).
+  /// Default `null`: no limit. Set it to turn the limit on.
   final int? maxQueuedCommands;
 
   RedisOptions({
@@ -91,14 +91,11 @@ class RedisOptions {
     this.idleTimeout = const Duration(seconds: 10),
     this.onBadCertificate,
     this.commandTimeout = defaultCommandTimeout,
-    this.maxQueuedCommands = defaultMaxQueuedCommands,
+    this.maxQueuedCommands,
   });
 
   /// Default of [commandTimeout].
   static const Duration defaultCommandTimeout = Duration(seconds: 10);
-
-  /// Default of [maxQueuedCommands].
-  static const int defaultMaxQueuedCommands = 10000;
 
   /// Make options from a `redis://` or `rediss://` URL.
   ///
@@ -126,7 +123,7 @@ class RedisOptions {
     Duration idleTimeout = const Duration(seconds: 10),
     bool Function(X509Certificate)? onBadCertificate,
     Duration? commandTimeout = defaultCommandTimeout,
-    int? maxQueuedCommands = defaultMaxQueuedCommands,
+    int? maxQueuedCommands,
   }) {
     // The URL can hold a password, so errors only show a redacted copy.
     String safeUrl = url.replaceFirst(RegExp(r'//.*@'), '//***@');

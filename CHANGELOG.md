@@ -1,4 +1,4 @@
-## Unreleased
+## 3.2.1
 
 - Faster: text with non-ASCII characters (like Burmese, accents or emoji) is
   now written as UTF-8 straight into the send buffer. Before, each such value

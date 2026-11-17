@@ -265,13 +265,22 @@ class Redis extends _RedisBase
     } else {
       throw Exception('Invalid type for channel');
     }
+    RedisType oldType = redisClientType;
+    bool oldKeepBytes = connection.keepBytes;
     redisClientType = RedisType.subscriber;
     // Keep message bytes as they are, for onMessageBytes.
     connection.keepBytes = true;
     RedisSubscriber cb = RedisSubscriber();
     // add the listener first, so no message is lost
     connection.subscribeListeners[channels] = cb;
-    await sendCommand(<String>['SUBSCRIBE', ...channels]);
+    try {
+      await sendCommand(<String>['SUBSCRIBE', ...channels]);
+    } catch (_) {
+      // Redis said no (like -NOPERM). Undo the setup above.
+      connection.subscribeListeners.remove(channels);
+      _undoSubscribeSetup(oldType, oldKeepBytes);
+      rethrow;
+    }
     return cb;
   }
 
@@ -287,14 +296,34 @@ class Redis extends _RedisBase
       throw Exception('cannot subscribe and publish on same connection');
     }
     List<String> patterns = _args(pattern);
+    RedisType oldType = redisClientType;
+    bool oldKeepBytes = connection.keepBytes;
     redisClientType = RedisType.subscriber;
     // Keep message bytes as they are, for onMessageBytes.
     connection.keepBytes = true;
     RedisSubscriber cb = RedisSubscriber();
+    Map<String, RedisSubscriber> oldListeners = <String, RedisSubscriber>{};
     for (String p in patterns) {
+      RedisSubscriber? old = connection.patternListeners[p];
+      if (old != null) oldListeners[p] = old;
       connection.patternListeners[p] = cb;
     }
-    await sendCommand(<String>['PSUBSCRIBE', ...patterns]);
+    try {
+      await sendCommand(<String>['PSUBSCRIBE', ...patterns]);
+    } catch (_) {
+      // Redis said no (like -NOPERM). Undo the setup above, and give
+      // back any listener this call replaced.
+      for (String p in patterns) {
+        RedisSubscriber? old = oldListeners[p];
+        if (old != null) {
+          connection.patternListeners[p] = old;
+        } else {
+          connection.patternListeners.remove(p);
+        }
+      }
+      _undoSubscribeSetup(oldType, oldKeepBytes);
+      rethrow;
+    }
     return cb;
   }
 
@@ -336,6 +365,16 @@ class Redis extends _RedisBase
       connection.patternListeners.remove(p);
     }
     _resetClientTypeIfNoSubscription();
+  }
+
+  /// After a failed SUBSCRIBE or PSUBSCRIBE: when no listener is left,
+  /// put the client type and keepBytes back to what they were before.
+  void _undoSubscribeSetup(RedisType oldType, bool oldKeepBytes) {
+    if (connection.subscribeListeners.isEmpty &&
+        connection.patternListeners.isEmpty) {
+      redisClientType = oldType;
+      connection.keepBytes = oldKeepBytes;
+    }
   }
 
   void _resetClientTypeIfNoSubscription() {

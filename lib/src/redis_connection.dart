@@ -337,6 +337,14 @@ class RedisConnection {
       if (_keepBytes) reply = _bytesToText(reply);
 
       _PendingReply entry = _pending.first;
+      if (entry.expected > 1 && !entry.isPipeline && reply is RedisError) {
+        // SUBSCRIBE a b waits for one reply per name. But Redis sends only
+        // one error when the whole command fails (like -NOPERM). Fail now,
+        // or the command waits forever.
+        _takeFirst();
+        entry.completer.completeError(reply);
+        continue;
+      }
       if (entry.expected > 1 || entry.isPipeline) {
         List<dynamic> got = entry.replies ??= <dynamic>[];
         got.add(reply);

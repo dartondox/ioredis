@@ -137,6 +137,10 @@ class Redis extends _RedisBase
   /// subscriber, publisher or normal set and get
   RedisType redisClientType = RedisType.normal;
 
+  /// Listeners of SUBSCRIBE or PSUBSCRIBE calls that Redis rejected.
+  /// A rollback never puts one of these back. Weak, so no memory leak.
+  final Expando<bool> _failedListeners = Expando<bool>();
+
   Redis([RedisOptions? opt]) {
     if (opt != null) {
       option = opt;
@@ -269,13 +273,16 @@ class Redis extends _RedisBase
     // Keep message bytes as they are, for onMessageBytes.
     connection.keepBytes = true;
     RedisSubscriber cb = RedisSubscriber();
+    // The same List can be passed twice. Keep the listener it had.
+    RedisSubscriber? old = connection.subscribeListeners[channels];
     // add the listener first, so no message is lost
     connection.subscribeListeners[channels] = cb;
     try {
       await sendCommand(<String>['SUBSCRIBE', ...channels]);
     } catch (_) {
       // Redis said no (like -NOPERM). Undo the setup above.
-      connection.subscribeListeners.remove(channels);
+      _failedListeners[cb] = true;
+      _rollbackListener(connection.subscribeListeners, channels, cb, old);
       _resetClientTypeIfNoSubscription();
       rethrow;
     }
@@ -313,13 +320,9 @@ class Redis extends _RedisBase
     } catch (_) {
       // Redis said no (like -NOPERM). Undo the setup above, and give
       // back any listener this call replaced.
+      _failedListeners[cb] = true;
       for (String p in patterns) {
-        RedisSubscriber? old = oldListeners[p];
-        if (old != null) {
-          connection.patternListeners[p] = old;
-        } else {
-          connection.patternListeners.remove(p);
-        }
+        _rollbackListener(connection.patternListeners, p, cb, oldListeners[p]);
       }
       _resetClientTypeIfNoSubscription();
       rethrow;
@@ -365,6 +368,23 @@ class Redis extends _RedisBase
       connection.patternListeners.remove(p);
     }
     _resetClientTypeIfNoSubscription();
+  }
+
+  /// Undo one listener of a failed SUBSCRIBE or PSUBSCRIBE call.
+  /// When a newer call owns [key] now, leave it. Else give back [old],
+  /// unless [old] also failed: then remove the key.
+  void _rollbackListener<K>(
+    Map<K, RedisSubscriber> listeners,
+    K key,
+    RedisSubscriber cb,
+    RedisSubscriber? old,
+  ) {
+    if (!identical(listeners[key], cb)) return;
+    if (old != null && _failedListeners[old] != true) {
+      listeners[key] = old;
+    } else {
+      listeners.remove(key);
+    }
   }
 
   void _resetClientTypeIfNoSubscription() {

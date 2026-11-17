@@ -120,5 +120,68 @@ void main() {
       expect(user.connection.keepBytes, isFalse);
       expect(await user.publish('$name.ok3', 'hi'), 0);
     }, timeout: Timeout(Duration(seconds: 5)));
+
+    test(
+      'overlapping psubscribe: the one that works keeps its listener',
+      () async {
+        String okPattern = '$name.ok*';
+        Completer<String?> got = Completer<String?>();
+        // Start both at the same time. Only the first one is rejected.
+        Future<RedisSubscriber> a = user.psubscribe(<String>[
+          okPattern,
+          '$name:no*',
+        ]);
+        Future<RedisSubscriber> b = user.psubscribe(okPattern);
+        await expectLater(a, throwsA(isA<RedisError>()));
+        RedisSubscriber sb = await b;
+        sb.onPatternMessage = (String p, String channel, String? message) {
+          if (!got.isCompleted) got.complete(message);
+        };
+        expect(user.connection.patternListeners[okPattern], same(sb));
+        expect(user.redisClientType, RedisType.subscriber);
+        expect(await admin.publish('$name.ok4', 'hi'), 1);
+        expect(await got.future.timeout(Duration(seconds: 2)), 'hi');
+      },
+      timeout: Timeout(Duration(seconds: 5)),
+    );
+
+    test(
+      'two failed psubscribe calls do not put back a failed listener',
+      () async {
+        String okPattern = '$name.ok*';
+        Future<RedisSubscriber> a = user.psubscribe(<String>[
+          okPattern,
+          '$name:no*',
+        ]);
+        Future<RedisSubscriber> b = user.psubscribe(<String>[
+          okPattern,
+          '$name:no2*',
+        ]);
+        await expectLater(a, throwsA(isA<RedisError>()));
+        await expectLater(b, throwsA(isA<RedisError>()));
+        expect(user.connection.patternListeners, isEmpty);
+        expect(user.redisClientType, RedisType.normal);
+      },
+      timeout: Timeout(Duration(seconds: 5)),
+    );
+
+    test(
+      'same List in two subscribe calls: the one that works stays',
+      () async {
+        List<String> channels = <String>['$name.ok5'];
+        Completer<String?> got = Completer<String?>();
+        RedisSubscriber s = await user.subscribe(channels);
+        s.onMessage = (String channel, String? message) {
+          if (!got.isCompleted) got.complete(message);
+        };
+        // Add a channel that is not allowed to the same List.
+        channels.add('$name:no');
+        await expectLater(user.subscribe(channels), throwsA(isA<RedisError>()));
+        expect(user.connection.subscribeListeners[channels], same(s));
+        expect(await admin.publish('$name.ok5', 'hi'), 1);
+        expect(await got.future.timeout(Duration(seconds: 2)), 'hi');
+      },
+      timeout: Timeout(Duration(seconds: 5)),
+    );
   });
 }

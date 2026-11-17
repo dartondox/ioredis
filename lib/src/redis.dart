@@ -138,8 +138,11 @@ class Redis extends _RedisBase
   RedisType redisClientType = RedisType.normal;
 
   /// Listeners of SUBSCRIBE or PSUBSCRIBE calls that Redis rejected.
-  /// A rollback never puts one of these back. Weak, so no memory leak.
-  final Expando<bool> _failedListeners = Expando<bool>();
+  /// The value says which listener the call replaced, per key (the
+  /// channels List or the pattern). A rollback follows it back to the
+  /// newest listener that did not fail. Weak, so no memory leak.
+  final Expando<Map<Object, RedisSubscriber?>> _failedCalls =
+      Expando<Map<Object, RedisSubscriber?>>();
 
   Redis([RedisOptions? opt]) {
     if (opt != null) {
@@ -281,8 +284,8 @@ class Redis extends _RedisBase
       await sendCommand(<String>['SUBSCRIBE', ...channels]);
     } catch (_) {
       // Redis said no (like -NOPERM). Undo the setup above.
-      _failedListeners[cb] = true;
-      _rollbackListener(connection.subscribeListeners, channels, cb, old);
+      _failedCalls[cb] = <Object, RedisSubscriber?>{channels: old};
+      _rollbackChannels(cb, _liveListener(channels, old));
       _resetClientTypeIfNoSubscription();
       rethrow;
     }
@@ -307,10 +310,9 @@ class Redis extends _RedisBase
     RedisSubscriber cb = RedisSubscriber();
     // Save the old listeners first. A pattern can be in the list twice,
     // and the second time it would already point to this call's cb.
-    Map<String, RedisSubscriber> oldListeners = <String, RedisSubscriber>{};
+    Map<Object, RedisSubscriber?> oldListeners = <Object, RedisSubscriber?>{};
     for (String p in patterns) {
-      RedisSubscriber? old = connection.patternListeners[p];
-      if (old != null) oldListeners[p] = old;
+      oldListeners[p] = connection.patternListeners[p];
     }
     for (String p in patterns) {
       connection.patternListeners[p] = cb;
@@ -320,9 +322,17 @@ class Redis extends _RedisBase
     } catch (_) {
       // Redis said no (like -NOPERM). Undo the setup above, and give
       // back any listener this call replaced.
-      _failedListeners[cb] = true;
+      _failedCalls[cb] = oldListeners;
       for (String p in patterns) {
-        _rollbackListener(connection.patternListeners, p, cb, oldListeners[p]);
+        // Only when this call still owns the pattern. A newer call or
+        // punsubscribe changed it otherwise, and that stays.
+        if (!identical(connection.patternListeners[p], cb)) continue;
+        RedisSubscriber? live = _liveListener(p, oldListeners[p]);
+        if (live != null) {
+          connection.patternListeners[p] = live;
+        } else {
+          connection.patternListeners.remove(p);
+        }
       }
       _resetClientTypeIfNoSubscription();
       rethrow;
@@ -370,20 +380,33 @@ class Redis extends _RedisBase
     _resetClientTypeIfNoSubscription();
   }
 
-  /// Undo one listener of a failed SUBSCRIBE or PSUBSCRIBE call.
-  /// When a newer call owns [key] now, leave it. Else give back [old],
-  /// unless [old] also failed: then remove the key.
-  void _rollbackListener<K>(
-    Map<K, RedisSubscriber> listeners,
-    K key,
-    RedisSubscriber cb,
-    RedisSubscriber? old,
-  ) {
-    if (!identical(listeners[key], cb)) return;
-    if (old != null && _failedListeners[old] != true) {
-      listeners[key] = old;
-    } else {
-      listeners.remove(key);
+  /// The newest listener for [key] that did not fail, starting at [old].
+  /// A listener of a call that still waits counts as not failed. If that
+  /// call fails later, its own rollback fixes the entry again.
+  RedisSubscriber? _liveListener(Object key, RedisSubscriber? old) {
+    RedisSubscriber? current = old;
+    while (current != null) {
+      Map<Object, RedisSubscriber?>? replaced = _failedCalls[current];
+      if (replaced == null) return current;
+      current = replaced[key];
+    }
+    return null;
+  }
+
+  /// Undo the entry of a failed SUBSCRIBE call. It is found by its
+  /// listener, not by its key: unsubscribe() can move it to a new List.
+  /// When a newer call or unsubscribe() replaced it, it is left alone.
+  void _rollbackChannels(RedisSubscriber cb, RedisSubscriber? live) {
+    Map<List<String>, RedisSubscriber> listeners =
+        connection.subscribeListeners;
+    for (List<String> key in listeners.keys) {
+      if (!identical(listeners[key], cb)) continue;
+      if (live != null) {
+        listeners[key] = live;
+      } else {
+        listeners.remove(key);
+      }
+      return;
     }
   }
 

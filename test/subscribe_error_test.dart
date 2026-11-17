@@ -183,5 +183,64 @@ void main() {
       },
       timeout: Timeout(Duration(seconds: 5)),
     );
+
+    test('unsubscribe at the same time does not keep a failed entry', () async {
+      // The UNSUBSCRIBE reply comes first and moves every entry to a new
+      // List. The failed SUBSCRIBE must still remove its own entry.
+      Future<void> u = user.unsubscribe('$name.ok7');
+      Future<RedisSubscriber> s = user.subscribe(<String>[
+        '$name:a',
+        '$name:b',
+      ]);
+      await u;
+      await expectLater(s, throwsA(isA<RedisError>()));
+      expect(user.connection.subscribeListeners, isEmpty);
+      expect(user.redisClientType, RedisType.normal);
+      expect(user.connection.keepBytes, isFalse);
+      expect(await user.publish('$name.ok7', 'hi'), 0);
+    }, timeout: Timeout(Duration(seconds: 5)));
+
+    test(
+      'two failed psubscribe calls give back the older working one',
+      () async {
+        String okPattern = '$name.ok*';
+        Completer<String?> got = Completer<String?>();
+        RedisSubscriber first = await user.psubscribe(okPattern);
+        first.onPatternMessage = (String p, String channel, String? message) {
+          if (!got.isCompleted) got.complete(message);
+        };
+        Future<RedisSubscriber> a = user.psubscribe(<String>[
+          okPattern,
+          '$name:no1*',
+        ]);
+        Future<RedisSubscriber> b = user.psubscribe(<String>[
+          okPattern,
+          '$name:no2*',
+        ]);
+        await expectLater(a, throwsA(isA<RedisError>()));
+        await expectLater(b, throwsA(isA<RedisError>()));
+        expect(user.connection.patternListeners[okPattern], same(first));
+        expect(user.connection.patternListeners.length, 1);
+        expect(await admin.publish('$name.ok8', 'hi'), 1);
+        expect(await got.future.timeout(Duration(seconds: 2)), 'hi');
+      },
+      timeout: Timeout(Duration(seconds: 5)),
+    );
+
+    test(
+      'two failed subscribe calls on the same List give back the first',
+      () async {
+        List<String> channels = <String>['$name.ok9'];
+        RedisSubscriber first = await user.subscribe(channels);
+        channels.add('$name:no');
+        Future<RedisSubscriber> a = user.subscribe(channels);
+        Future<RedisSubscriber> b = user.subscribe(channels);
+        await expectLater(a, throwsA(isA<RedisError>()));
+        await expectLater(b, throwsA(isA<RedisError>()));
+        expect(user.connection.subscribeListeners[channels], same(first));
+        expect(user.connection.subscribeListeners.length, 1);
+      },
+      timeout: Timeout(Duration(seconds: 5)),
+    );
   });
 }

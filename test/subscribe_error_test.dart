@@ -133,7 +133,7 @@ void main() {
           second,
         ]);
         expect(await admin.publish('$name.ok10', 'hi'), 1);
-        await user.connection.sendCommand(<String>['PING']);
+        expect(await user.ping(), 'PONG');
         expect(gotFirst, <String?>['hi']);
         expect(gotSecond, <String?>['hi']);
       },

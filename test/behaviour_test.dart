@@ -488,6 +488,15 @@ void main() {
       expect(() => pub.publish('x', <int>[1, 2]), throwsArgumentError);
     });
 
+    test('ping works in subscriber mode, the same as normal mode', () async {
+      Redis sub = testClient();
+      await sub.subscribe(uniquePrefix('pingsub'));
+      expect(await sub.ping(), 'PONG');
+      expect(await sub.ping('hi'), 'hi');
+      await sub.psubscribe('${uniquePrefix('pingpsub')}.*');
+      expect(await sub.ping(), 'PONG');
+    });
+
     test('subscriber cannot publish', () async {
       Redis sub = testClient();
       await sub.subscribe(uniquePrefix('mode'));

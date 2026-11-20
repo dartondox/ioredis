@@ -19,6 +19,9 @@
 - Breaking: `RedisConnection.patternListeners` changed type from
   `Map<String, RedisSubscriber>` to `Map<String, List<RedisSubscriber>>`, so
   one pattern can hold many subscribers.
+- Fix: `ping()` on a client in subscriber mode threw a type error, because
+  Redis answers `["pong", message]` there. Now it returns the same as in normal
+  mode: `PONG`, or the message you passed.
 
 ## 3.2.1
 

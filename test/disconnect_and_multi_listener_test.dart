@@ -213,7 +213,7 @@ void main() {
       b.onPatternMessage = (String p, String c, String? m) => gotB.add(m);
 
       expect(await pub.publish(pattern.replaceAll('*', 'x'), 'hello'), 1);
-      await sub.connection.sendCommand(<String>['PING']);
+      expect(await sub.ping(), 'PONG');
       expect(gotA, <String?>['hello']);
       expect(gotB, <String?>['hello']);
       expect(sub.connection.patternListeners[pattern], <RedisSubscriber>[a, b]);

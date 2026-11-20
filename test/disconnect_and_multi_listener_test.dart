@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ioredis/ioredis.dart';
 import 'package:test/test.dart';
@@ -159,5 +160,41 @@ void main() {
       expect(errors, hasLength(1));
       expect(errors.single, isA<StateError>());
     });
+
+    test(
+      'a throwing pattern callback goes to onError, commands still work',
+      () async {
+        List<Object> errors = <Object>[];
+        Redis sub = Redis(
+          RedisOptions(
+            host: redisHost,
+            port: redisPort,
+            onError: (dynamic e) => errors.add(e as Object),
+          ),
+        );
+        addTearDown(sub.quit);
+        Redis pub = testClient();
+        String channel = uniquePrefix('pthrows');
+        RedisSubscriber ps = await sub.psubscribe('$channel*');
+        Completer<void> bytesDone = Completer<void>();
+        ps.onPatternMessage = (String p, String c, String? m) =>
+            throw StateError('boom');
+        // The bytes callback of the same subscriber must still run.
+        ps.onPatternMessageBytes = (String p, String c, Uint8List m) =>
+            bytesDone.complete();
+
+        await pub.publish('${channel}x', 'hello');
+        await bytesDone.future.timeout(const Duration(seconds: 3));
+        Object reply =
+            await sub.connection
+                    .sendCommand(<String>['PING'])
+                    .timeout(const Duration(seconds: 3))
+                as Object;
+
+        expect(reply, isNotNull);
+        expect(errors, hasLength(1));
+        expect(errors.single, isA<StateError>());
+      },
+    );
   });
 }

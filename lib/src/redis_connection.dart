@@ -403,9 +403,14 @@ class RedisConnection {
       String channel = _text(reply[1]);
       dynamic message = reply[2];
       for (RedisSubscriber cb in _findSubscribeListeners(channel)) {
-        /// One callback that throws must not stop the other subscribers.
+        /// One callback that throws must not stop the other callbacks.
+        /// Its error goes to onError.
         try {
           cb.onMessageBytes?.call(channel, _bytes(message));
+        } catch (error) {
+          _throwSafeError(error);
+        }
+        try {
           cb.onMessage?.call(channel, _textOrNull(message));
         } catch (error) {
           _throwSafeError(error);
@@ -422,15 +427,23 @@ class RedisConnection {
       RedisSubscriber? cb = patternListeners[pattern];
       if (cb == null) return true;
       dynamic message = reply[3];
-      if (cb.onPatternMessageBytes != null) {
-        cb.onPatternMessageBytes!(pattern, channel, _bytes(message));
-      } else {
-        cb.onMessageBytes?.call(channel, _bytes(message));
+      try {
+        if (cb.onPatternMessageBytes != null) {
+          cb.onPatternMessageBytes!(pattern, channel, _bytes(message));
+        } else {
+          cb.onMessageBytes?.call(channel, _bytes(message));
+        }
+      } catch (error) {
+        _throwSafeError(error);
       }
-      if (cb.onPatternMessage != null) {
-        cb.onPatternMessage!(pattern, channel, _textOrNull(message));
-      } else {
-        cb.onMessage?.call(channel, _textOrNull(message));
+      try {
+        if (cb.onPatternMessage != null) {
+          cb.onPatternMessage!(pattern, channel, _textOrNull(message));
+        } else {
+          cb.onMessage?.call(channel, _textOrNull(message));
+        }
+      } catch (error) {
+        _throwSafeError(error);
       }
       return true;
     }

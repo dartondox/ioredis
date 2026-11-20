@@ -5,6 +5,8 @@
   has already been listened to`. Now the socket is closed when it arrives.
 - Fix: two `subscribe()` calls on the same channel gave messages to the first
   one only. Now every subscriber of the channel gets the message.
+- Fix: a `subscribe` or `psubscribe` callback that throws no longer stops the
+  other callbacks or the rest of the replies. The error goes to `onError`.
 - Fix: `subscribe(['a', 'b'])` and `psubscribe([...])` with more than one name
   hung forever when Redis sent back one error, like `NOPERM` for an ACL user
   without channel rights. Now they throw the `RedisError`, and the client goes

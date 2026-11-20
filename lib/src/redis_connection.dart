@@ -196,6 +196,13 @@ class RedisConnection {
           }
         }
 
+        /// disconnect() was called while the socket was still connecting.
+        /// It could not close a socket that did not exist yet. Close it now.
+        if (!_shouldReconnect) {
+          await _closeUnusedSocket();
+          return;
+        }
+
         /// Setting socket option to tcp no delay
         /// If tcpNoDelay is enabled, the socket will not buffer data internally,
         /// but instead write each data chunk as an individual TCP packet.
@@ -227,7 +234,7 @@ class RedisConnection {
         /// disconnect() was called during the handshake. Its socket close
         /// ends this connection, so do not mark it connected.
         if (!_shouldReconnect) {
-          status = RedisConnectionStatus.disconnected;
+          await _closeUnusedSocket();
           return;
         }
 
@@ -244,6 +251,10 @@ class RedisConnection {
         _encoder.clear();
         _failPending(error);
         status = RedisConnectionStatus.disconnected;
+
+        /// disconnect() was called. The error is only a result of the close
+        /// (like a write to a closed socket), so do not report it.
+        if (!_shouldReconnect) return;
 
         if (error is SocketException) {
           _reportSocketError(_socketError(error.message));
@@ -274,6 +285,18 @@ class RedisConnection {
       /// disconnect() can be called during the wait.
       if (!_shouldReconnect) return;
     }
+  }
+
+  /// Close the socket after disconnect() was called during a connect.
+  /// The listener is cancelled first, so _onDone does not start a reconnect.
+  Future<void> _closeUnusedSocket() async {
+    await _subscription?.cancel();
+    _subscription = null;
+    _redisSocket?.destroy();
+    _redisSocket = null;
+    _encoder.clear();
+    _totalRetry = 0;
+    status = RedisConnectionStatus.disconnected;
   }
 
   /// Error replies that go away by themselves after a short time.
@@ -378,11 +401,21 @@ class RedisConnection {
         reply.length == 3 &&
         subscribeListeners.isNotEmpty) {
       String channel = _text(reply[1]);
-      RedisSubscriber? cb = _findSubscribeListener(channel);
-      if (cb == null) return true;
       dynamic message = reply[2];
-      cb.onMessageBytes?.call(channel, _bytes(message));
-      cb.onMessage?.call(channel, _textOrNull(message));
+      for (RedisSubscriber cb in _findSubscribeListeners(channel)) {
+        /// One callback that throws must not stop the other callbacks.
+        /// Its error goes to onError.
+        try {
+          cb.onMessageBytes?.call(channel, _bytes(message));
+        } catch (error) {
+          _throwSafeError(error);
+        }
+        try {
+          cb.onMessage?.call(channel, _textOrNull(message));
+        } catch (error) {
+          _throwSafeError(error);
+        }
+      }
       return true;
     }
 
@@ -394,15 +427,23 @@ class RedisConnection {
       RedisSubscriber? cb = patternListeners[pattern];
       if (cb == null) return true;
       dynamic message = reply[3];
-      if (cb.onPatternMessageBytes != null) {
-        cb.onPatternMessageBytes!(pattern, channel, _bytes(message));
-      } else {
-        cb.onMessageBytes?.call(channel, _bytes(message));
+      try {
+        if (cb.onPatternMessageBytes != null) {
+          cb.onPatternMessageBytes!(pattern, channel, _bytes(message));
+        } else {
+          cb.onMessageBytes?.call(channel, _bytes(message));
+        }
+      } catch (error) {
+        _throwSafeError(error);
       }
-      if (cb.onPatternMessage != null) {
-        cb.onPatternMessage!(pattern, channel, _textOrNull(message));
-      } else {
-        cb.onMessage?.call(channel, _textOrNull(message));
+      try {
+        if (cb.onPatternMessage != null) {
+          cb.onPatternMessage!(pattern, channel, _textOrNull(message));
+        } else {
+          cb.onMessage?.call(channel, _textOrNull(message));
+        }
+      } catch (error) {
+        _throwSafeError(error);
       }
       return true;
     }
@@ -838,17 +879,14 @@ class RedisConnection {
     return 1;
   }
 
-  /// Get subscribe listener callback related to the channel
-  RedisSubscriber? _findSubscribeListener(String channel) {
-    List<List<String>> channelsLists = subscribeListeners.keys.toList();
-    channelsLists = channelsLists
-        .where((List<String> element) => element.contains(channel))
-        .toList();
-    if (channelsLists.isNotEmpty) {
-      List<String>? channels = channelsLists.first;
-      return subscribeListeners[channels];
-    }
-    return null;
+  /// Get every subscribe listener for the channel. Each subscriber is
+  /// listed once, even if it has the channel in more than one list.
+  Set<RedisSubscriber> _findSubscribeListeners(String channel) {
+    Set<RedisSubscriber> found = Set<RedisSubscriber>.identity();
+    subscribeListeners.forEach((List<String> channels, RedisSubscriber cb) {
+      if (channels.contains(channel)) found.add(cb);
+    });
+    return found;
   }
 
   /// Login to redis

@@ -137,10 +137,10 @@ class Redis extends _RedisBase
   /// subscriber, publisher or normal set and get
   RedisType redisClientType = RedisType.normal;
 
-  /// Listeners of SUBSCRIBE or PSUBSCRIBE calls that Redis rejected.
-  /// The value says which listener the call replaced, per key (the
-  /// channels List or the pattern). A rollback follows it back to the
-  /// newest listener that did not fail. Weak, so no memory leak.
+  /// Listeners of SUBSCRIBE calls that Redis rejected.
+  /// The value says which listener the call replaced, per channels List.
+  /// A rollback follows it back to the newest listener that did not
+  /// fail. Weak, so no memory leak.
   final Expando<Map<Object, RedisSubscriber?>> _failedCalls =
       Expando<Map<Object, RedisSubscriber?>>();
 
@@ -308,31 +308,24 @@ class Redis extends _RedisBase
     // Keep message bytes as they are, for onMessageBytes.
     connection.keepBytes = true;
     RedisSubscriber cb = RedisSubscriber();
-    // Save the old listeners first. A pattern can be in the list twice,
-    // and the second time it would already point to this call's cb.
-    Map<Object, RedisSubscriber?> oldListeners = <Object, RedisSubscriber?>{};
-    for (String p in patterns) {
-      oldListeners[p] = connection.patternListeners[p];
-    }
-    for (String p in patterns) {
-      connection.patternListeners[p] = cb;
+    // A pattern listed twice gets this subscriber once.
+    Set<String> unique = patterns.toSet();
+    // add the listener first, so no message is lost
+    for (String p in unique) {
+      connection.patternListeners
+          .putIfAbsent(p, () => <RedisSubscriber>[])
+          .add(cb);
     }
     try {
       await sendCommand(<String>['PSUBSCRIBE', ...patterns]);
     } catch (_) {
-      // Redis said no (like -NOPERM). Undo the setup above, and give
-      // back any listener this call replaced.
-      _failedCalls[cb] = oldListeners;
-      for (String p in patterns) {
-        // Only when this call still owns the pattern. A newer call or
-        // punsubscribe changed it otherwise, and that stays.
-        if (!identical(connection.patternListeners[p], cb)) continue;
-        RedisSubscriber? live = _liveListener(p, oldListeners[p]);
-        if (live != null) {
-          connection.patternListeners[p] = live;
-        } else {
-          connection.patternListeners.remove(p);
-        }
+      // Redis said no (like -NOPERM). Remove only this call's subscriber.
+      // Other subscribers of the same pattern stay.
+      for (String p in unique) {
+        List<RedisSubscriber>? list = connection.patternListeners[p];
+        if (list == null) continue;
+        list.remove(cb);
+        if (list.isEmpty) connection.patternListeners.remove(p);
       }
       _resetClientTypeIfNoSubscription();
       rethrow;
@@ -366,6 +359,7 @@ class Redis extends _RedisBase
   }
 
   /// Unsubscribe from patterns. Without patterns, unsubscribe from all.
+  /// Every subscriber of a removed pattern stops getting its messages.
   /// ```
   /// await redis.punsubscribe('news.*');
   /// ```

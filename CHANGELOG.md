@@ -11,6 +11,14 @@
   hung forever when Redis sent back one error, like `NOPERM` for an ACL user
   without channel rights. Now they throw the `RedisError`, and the client goes
   back to normal mode.
+- Fix: two `psubscribe()` calls on the same pattern gave messages to the last
+  one only. The first one silently stopped getting them. Now every subscriber
+  of the pattern gets the message, once. A failed `psubscribe()` removes only
+  its own subscriber. `punsubscribe()` still removes all subscribers of the
+  pattern.
+- Breaking: `RedisConnection.patternListeners` changed type from
+  `Map<String, RedisSubscriber>` to `Map<String, List<RedisSubscriber>>`, so
+  one pattern can hold many subscribers.
 
 ## 3.2.1
 

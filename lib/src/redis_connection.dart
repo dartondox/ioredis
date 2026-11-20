@@ -88,9 +88,11 @@ class RedisConnection {
   final Map<List<String>, RedisSubscriber> subscribeListeners =
       <List<String>, RedisSubscriber>{};
 
-  /// Listeners of pattern subscribers, by pattern
-  final Map<String, RedisSubscriber> patternListeners =
-      <String, RedisSubscriber>{};
+  /// Listeners of pattern subscribers, by pattern. One pattern can have
+  /// many subscribers, in the order they were added. A pattern with no
+  /// subscribers is removed, never kept as an empty list.
+  final Map<String, List<RedisSubscriber>> patternListeners =
+      <String, List<RedisSubscriber>>{};
 
   /// True after the first connect worked. A later connect is a reconnect.
   bool _connectedBefore = false;
@@ -424,26 +426,31 @@ class RedisConnection {
         patternListeners.isNotEmpty) {
       String pattern = _text(reply[1]);
       String channel = _text(reply[2]);
-      RedisSubscriber? cb = patternListeners[pattern];
-      if (cb == null) return true;
+      List<RedisSubscriber>? listeners = patternListeners[pattern];
+      if (listeners == null) return true;
       dynamic message = reply[3];
-      try {
-        if (cb.onPatternMessageBytes != null) {
-          cb.onPatternMessageBytes!(pattern, channel, _bytes(message));
-        } else {
-          cb.onMessageBytes?.call(channel, _bytes(message));
+      // A copy, so a callback can psubscribe or punsubscribe safely.
+      for (RedisSubscriber cb in List<RedisSubscriber>.of(listeners)) {
+        /// One callback that throws must not stop the other callbacks.
+        /// Its error goes to onError.
+        try {
+          if (cb.onPatternMessageBytes != null) {
+            cb.onPatternMessageBytes!(pattern, channel, _bytes(message));
+          } else {
+            cb.onMessageBytes?.call(channel, _bytes(message));
+          }
+        } catch (error) {
+          _throwSafeError(error);
         }
-      } catch (error) {
-        _throwSafeError(error);
-      }
-      try {
-        if (cb.onPatternMessage != null) {
-          cb.onPatternMessage!(pattern, channel, _textOrNull(message));
-        } else {
-          cb.onMessage?.call(channel, _textOrNull(message));
+        try {
+          if (cb.onPatternMessage != null) {
+            cb.onPatternMessage!(pattern, channel, _textOrNull(message));
+          } else {
+            cb.onMessage?.call(channel, _textOrNull(message));
+          }
+        } catch (error) {
+          _throwSafeError(error);
         }
-      } catch (error) {
-        _throwSafeError(error);
       }
       return true;
     }

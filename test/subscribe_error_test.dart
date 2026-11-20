@@ -104,11 +104,41 @@ void main() {
         user.psubscribe(<String>[okPattern, okPattern, '$name:no*']),
         throwsA(isA<RedisError>()),
       );
-      expect(user.connection.patternListeners[okPattern], same(first));
+      expect(user.connection.patternListeners[okPattern], <RedisSubscriber>[
+        first,
+      ]);
       expect(user.connection.patternListeners.length, 1);
       expect(await admin.publish('$name.ok2', 'hi'), 1);
       expect(await got.future.timeout(Duration(seconds: 2)), 'hi');
     }, timeout: Timeout(Duration(seconds: 5)));
+
+    test(
+      'a failed psubscribe removes only its own subscriber of a pattern',
+      () async {
+        String okPattern = '$name.ok*';
+        List<String?> gotFirst = <String?>[];
+        List<String?> gotSecond = <String?>[];
+        RedisSubscriber first = await user.psubscribe(okPattern);
+        RedisSubscriber second = await user.psubscribe(okPattern);
+        first.onPatternMessage = (String p, String c, String? m) =>
+            gotFirst.add(m);
+        second.onPatternMessage = (String p, String c, String? m) =>
+            gotSecond.add(m);
+        await expectLater(
+          user.psubscribe(<String>[okPattern, '$name:no*']),
+          throwsA(isA<RedisError>()),
+        );
+        expect(user.connection.patternListeners[okPattern], <RedisSubscriber>[
+          first,
+          second,
+        ]);
+        expect(await admin.publish('$name.ok10', 'hi'), 1);
+        await user.connection.sendCommand(<String>['PING']);
+        expect(gotFirst, <String?>['hi']);
+        expect(gotSecond, <String?>['hi']);
+      },
+      timeout: Timeout(Duration(seconds: 5)),
+    );
 
     test('a client whose subscribes all failed can publish', () async {
       // Two subscribes at the same time. Both fail.
@@ -137,7 +167,9 @@ void main() {
         sb.onPatternMessage = (String p, String channel, String? message) {
           if (!got.isCompleted) got.complete(message);
         };
-        expect(user.connection.patternListeners[okPattern], same(sb));
+        expect(user.connection.patternListeners[okPattern], <RedisSubscriber>[
+          sb,
+        ]);
         expect(user.redisClientType, RedisType.subscriber);
         expect(await admin.publish('$name.ok4', 'hi'), 1);
         expect(await got.future.timeout(Duration(seconds: 2)), 'hi');
@@ -219,7 +251,9 @@ void main() {
         ]);
         await expectLater(a, throwsA(isA<RedisError>()));
         await expectLater(b, throwsA(isA<RedisError>()));
-        expect(user.connection.patternListeners[okPattern], same(first));
+        expect(user.connection.patternListeners[okPattern], <RedisSubscriber>[
+          first,
+        ]);
         expect(user.connection.patternListeners.length, 1);
         expect(await admin.publish('$name.ok8', 'hi'), 1);
         expect(await got.future.timeout(Duration(seconds: 2)), 'hi');

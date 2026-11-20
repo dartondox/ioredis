@@ -12,7 +12,11 @@ void main() {
     late List<Socket> accepted;
     late List<Completer<void>> closed;
 
+    /// Runs when the fake server gets bytes from the client.
+    void Function(Socket socket)? onData;
+
     setUp(() async {
+      onData = null;
       server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       accepted = <Socket>[];
       closed = <Completer<void>>[];
@@ -20,10 +24,12 @@ void main() {
         Completer<void> done = Completer<void>();
         accepted.add(socket);
         closed.add(done);
-        // The fake server never replies. It only watches for the close.
         socket.listen(
-          (_) {},
-          onDone: done.complete,
+          (_) => onData?.call(socket),
+          onDone: () {
+            done.complete();
+            socket.destroy();
+          },
           onError: (Object _) => done.complete(),
         );
       });
@@ -35,16 +41,24 @@ void main() {
       });
     });
 
-    Redis fakeClient() {
-      // A short timeout: disconnect() waits for the silent server to close.
+    /// A long connectTimeout, so a socket that is never closed by the
+    /// client stays open for the whole test.
+    Redis fakeClient({String? password}) {
       Redis redis = Redis(
         RedisOptions(
           port: server.port,
-          connectTimeout: const Duration(seconds: 1),
+          password: password,
+          connectTimeout: const Duration(seconds: 30),
         ),
       );
       addTearDown(redis.connection.destroy);
       return redis;
+    }
+
+    Future<void> waitAccepted() async {
+      while (accepted.isEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
     }
 
     test('closes the socket that arrives after disconnect()', () async {
@@ -55,22 +69,40 @@ void main() {
 
       expect(redis.connection.status, RedisConnectionStatus.disconnected);
       expect(accepted, hasLength(1));
-      await closed.single.future.timeout(const Duration(seconds: 3));
+      await closed.single.future.timeout(const Duration(seconds: 2));
     });
 
     test('closes the socket when disconnect() runs in the handshake', () async {
-      Redis redis = fakeClient();
+      // AUTH is sent, and the server never replies.
+      Redis redis = fakeClient(password: 'secret');
       Future<void> connecting = redis.connection.connect();
-      while (accepted.isEmpty) {
-        await Future<void>.delayed(const Duration(milliseconds: 5));
-      }
-      // The server does not reply, so the client waits in the handshake.
+      await waitAccepted();
+      onData = null;
       await Future<void>.delayed(const Duration(milliseconds: 50));
-      await redis.connection.disconnect();
-      await connecting;
+      // The server never closes, so do not wait for it: close from the
+      // server side after the client has started to close.
+      Future<void> disconnecting = redis.connection.disconnect();
+      await closed.single.future.timeout(const Duration(seconds: 2));
+      await Future.wait(<Future<void>>[connecting, disconnecting]);
 
       expect(redis.connection.status, RedisConnectionStatus.disconnected);
-      await closed.single.future.timeout(const Duration(seconds: 3));
+    });
+
+    test('closes the socket when disconnect() comes before the AUTH reply '
+        'is read', () async {
+      Redis redis = fakeClient(password: 'secret');
+      Future<void>? disconnecting;
+      // The reply is sent right after disconnect() starts, so the
+      // handshake ends with +OK while the client is disconnecting.
+      onData = (Socket socket) {
+        disconnecting = redis.connection.disconnect();
+        socket.write('+OK\r\n');
+      };
+      await redis.connection.connect().timeout(const Duration(seconds: 5));
+      await disconnecting!.timeout(const Duration(seconds: 5));
+
+      expect(redis.connection.status, RedisConnectionStatus.disconnected);
+      await closed.single.future.timeout(const Duration(seconds: 2));
     });
 
     test('the client can send a command after that', () async {
@@ -101,6 +133,31 @@ void main() {
 
       expect(await gotA.future.timeout(const Duration(seconds: 3)), 'hello');
       expect(await gotB.future.timeout(const Duration(seconds: 3)), 'hello');
+    });
+
+    test('a callback that throws does not stop the other one', () async {
+      List<Object> errors = <Object>[];
+      Redis sub = Redis(
+        RedisOptions(
+          host: redisHost,
+          port: redisPort,
+          onError: (dynamic e) => errors.add(e as Object),
+        ),
+      );
+      addTearDown(sub.quit);
+      Redis pub = testClient();
+      String channel = uniquePrefix('throws');
+      RedisSubscriber a = await sub.subscribe(channel);
+      RedisSubscriber b = await sub.subscribe(channel);
+      Completer<String?> gotB = Completer<String?>();
+      a.onMessage = (String c, String? m) => throw StateError('boom');
+      b.onMessage = (String c, String? m) => gotB.complete(m);
+
+      await pub.publish(channel, 'hello');
+
+      expect(await gotB.future.timeout(const Duration(seconds: 3)), 'hello');
+      expect(errors, hasLength(1));
+      expect(errors.single, isA<StateError>());
     });
   });
 }

@@ -252,6 +252,10 @@ class RedisConnection {
         _failPending(error);
         status = RedisConnectionStatus.disconnected;
 
+        /// disconnect() was called. The error is only a result of the close
+        /// (like a write to a closed socket), so do not report it.
+        if (!_shouldReconnect) return;
+
         if (error is SocketException) {
           _reportSocketError(_socketError(error.message));
         } else if (error is OSError) {
@@ -291,6 +295,7 @@ class RedisConnection {
     _redisSocket?.destroy();
     _redisSocket = null;
     _encoder.clear();
+    _totalRetry = 0;
     status = RedisConnectionStatus.disconnected;
   }
 
@@ -398,8 +403,13 @@ class RedisConnection {
       String channel = _text(reply[1]);
       dynamic message = reply[2];
       for (RedisSubscriber cb in _findSubscribeListeners(channel)) {
-        cb.onMessageBytes?.call(channel, _bytes(message));
-        cb.onMessage?.call(channel, _textOrNull(message));
+        /// One callback that throws must not stop the other subscribers.
+        try {
+          cb.onMessageBytes?.call(channel, _bytes(message));
+          cb.onMessage?.call(channel, _textOrNull(message));
+        } catch (error) {
+          _throwSafeError(error);
+        }
       }
       return true;
     }

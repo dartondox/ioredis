@@ -1,3 +1,10 @@
+## Unreleased
+
+- Fix: `subscribe(['a', 'b'])` and `psubscribe([...])` with more than one name
+  hung forever when Redis sent back one error, like `NOPERM` for an ACL user
+  without channel rights. Now they throw the `RedisError`, and the client goes
+  back to normal mode.
+
 ## 3.2.1
 
 - Faster: text with non-ASCII characters (like Burmese, accents or emoji) is

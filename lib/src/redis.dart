@@ -137,6 +137,13 @@ class Redis extends _RedisBase
   /// subscriber, publisher or normal set and get
   RedisType redisClientType = RedisType.normal;
 
+  /// Listeners of SUBSCRIBE or PSUBSCRIBE calls that Redis rejected.
+  /// The value says which listener the call replaced, per key (the
+  /// channels List or the pattern). A rollback follows it back to the
+  /// newest listener that did not fail. Weak, so no memory leak.
+  final Expando<Map<Object, RedisSubscriber?>> _failedCalls =
+      Expando<Map<Object, RedisSubscriber?>>();
+
   Redis([RedisOptions? opt]) {
     if (opt != null) {
       option = opt;
@@ -269,9 +276,19 @@ class Redis extends _RedisBase
     // Keep message bytes as they are, for onMessageBytes.
     connection.keepBytes = true;
     RedisSubscriber cb = RedisSubscriber();
+    // The same List can be passed twice. Keep the listener it had.
+    RedisSubscriber? old = connection.subscribeListeners[channels];
     // add the listener first, so no message is lost
     connection.subscribeListeners[channels] = cb;
-    await sendCommand(<String>['SUBSCRIBE', ...channels]);
+    try {
+      await sendCommand(<String>['SUBSCRIBE', ...channels]);
+    } catch (_) {
+      // Redis said no (like -NOPERM). Undo the setup above.
+      _failedCalls[cb] = <Object, RedisSubscriber?>{channels: old};
+      _rollbackChannels(cb, _liveListener(channels, old));
+      _resetClientTypeIfNoSubscription();
+      rethrow;
+    }
     return cb;
   }
 
@@ -291,10 +308,35 @@ class Redis extends _RedisBase
     // Keep message bytes as they are, for onMessageBytes.
     connection.keepBytes = true;
     RedisSubscriber cb = RedisSubscriber();
+    // Save the old listeners first. A pattern can be in the list twice,
+    // and the second time it would already point to this call's cb.
+    Map<Object, RedisSubscriber?> oldListeners = <Object, RedisSubscriber?>{};
+    for (String p in patterns) {
+      oldListeners[p] = connection.patternListeners[p];
+    }
     for (String p in patterns) {
       connection.patternListeners[p] = cb;
     }
-    await sendCommand(<String>['PSUBSCRIBE', ...patterns]);
+    try {
+      await sendCommand(<String>['PSUBSCRIBE', ...patterns]);
+    } catch (_) {
+      // Redis said no (like -NOPERM). Undo the setup above, and give
+      // back any listener this call replaced.
+      _failedCalls[cb] = oldListeners;
+      for (String p in patterns) {
+        // Only when this call still owns the pattern. A newer call or
+        // punsubscribe changed it otherwise, and that stays.
+        if (!identical(connection.patternListeners[p], cb)) continue;
+        RedisSubscriber? live = _liveListener(p, oldListeners[p]);
+        if (live != null) {
+          connection.patternListeners[p] = live;
+        } else {
+          connection.patternListeners.remove(p);
+        }
+      }
+      _resetClientTypeIfNoSubscription();
+      rethrow;
+    }
     return cb;
   }
 
@@ -336,6 +378,36 @@ class Redis extends _RedisBase
       connection.patternListeners.remove(p);
     }
     _resetClientTypeIfNoSubscription();
+  }
+
+  /// The newest listener for [key] that did not fail, starting at [old].
+  /// A listener of a call that still waits counts as not failed. If that
+  /// call fails later, its own rollback fixes the entry again.
+  RedisSubscriber? _liveListener(Object key, RedisSubscriber? old) {
+    RedisSubscriber? current = old;
+    while (current != null) {
+      Map<Object, RedisSubscriber?>? replaced = _failedCalls[current];
+      if (replaced == null) return current;
+      current = replaced[key];
+    }
+    return null;
+  }
+
+  /// Undo the entry of a failed SUBSCRIBE call. It is found by its
+  /// listener, not by its key: unsubscribe() can move it to a new List.
+  /// When a newer call or unsubscribe() replaced it, it is left alone.
+  void _rollbackChannels(RedisSubscriber cb, RedisSubscriber? live) {
+    Map<List<String>, RedisSubscriber> listeners =
+        connection.subscribeListeners;
+    for (List<String> key in listeners.keys) {
+      if (!identical(listeners[key], cb)) continue;
+      if (live != null) {
+        listeners[key] = live;
+      } else {
+        listeners.remove(key);
+      }
+      return;
+    }
   }
 
   void _resetClientTypeIfNoSubscription() {

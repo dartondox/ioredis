@@ -268,7 +268,9 @@ class Redis extends _RedisBase
     if (channel is String) {
       channels = <String>[channel];
     } else if (channel is List<String>) {
-      channels = channel;
+      // A copy: the map is keyed by List identity, so the same caller
+      // List twice must not replace the first subscriber.
+      channels = List<String>.of(channel);
     } else {
       throw Exception('Invalid type for channel');
     }

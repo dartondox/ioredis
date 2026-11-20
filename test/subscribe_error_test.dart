@@ -178,6 +178,32 @@ void main() {
     );
 
     test(
+      'overlapping psubscribe: a later failed one keeps the working one',
+      () async {
+        String okPattern = '$name.ok*';
+        Completer<String?> got = Completer<String?>();
+        // Start both at the same time. Only the second one is rejected.
+        Future<RedisSubscriber> a = user.psubscribe(okPattern);
+        Future<RedisSubscriber> b = user.psubscribe(<String>[
+          okPattern,
+          '$name:no*',
+        ]);
+        RedisSubscriber sa = await a;
+        await expectLater(b, throwsA(isA<RedisError>()));
+        sa.onPatternMessage = (String p, String channel, String? message) {
+          if (!got.isCompleted) got.complete(message);
+        };
+        expect(user.connection.patternListeners[okPattern], <RedisSubscriber>[
+          sa,
+        ]);
+        expect(user.redisClientType, RedisType.subscriber);
+        expect(await admin.publish('$name.ok11', 'hi'), 1);
+        expect(await got.future.timeout(Duration(seconds: 2)), 'hi');
+      },
+      timeout: Timeout(Duration(seconds: 5)),
+    );
+
+    test(
       'two failed psubscribe calls do not put back a failed listener',
       () async {
         String okPattern = '$name.ok*';

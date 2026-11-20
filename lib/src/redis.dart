@@ -344,12 +344,20 @@ class Redis extends _RedisBase
               .expand((List<String> c) => c)
               .toList()
         : _args(channel);
+    // Only subscribers that exist now are removed. A subscribe() sent
+    // after this call runs after it in Redis too, so its subscriber stays.
+    Set<RedisSubscriber> before = Set<RedisSubscriber>.identity()
+      ..addAll(connection.subscribeListeners.values);
     await sendCommand(<String>['UNSUBSCRIBE', ...channels]);
 
     Map<List<String>, RedisSubscriber> listeners =
         Map<List<String>, RedisSubscriber>.of(connection.subscribeListeners);
     connection.subscribeListeners.clear();
     listeners.forEach((List<String> key, RedisSubscriber cb) {
+      if (!before.contains(cb)) {
+        connection.subscribeListeners[key] = cb;
+        return;
+      }
       List<String> left = key
           .where((String c) => !channels.contains(c))
           .toList();
@@ -367,9 +375,21 @@ class Redis extends _RedisBase
     List<String> patterns = pattern == null
         ? connection.patternListeners.keys.toList()
         : _args(pattern);
+    // Only subscribers that exist now are removed. A psubscribe() sent
+    // after this call runs after it in Redis too, so its subscriber stays.
+    Map<String, List<RedisSubscriber>> before =
+        <String, List<RedisSubscriber>>{};
+    for (String p in patterns) {
+      before[p] = List<RedisSubscriber>.of(
+        connection.patternListeners[p] ?? <RedisSubscriber>[],
+      );
+    }
     await sendCommand(<String>['PUNSUBSCRIBE', ...patterns]);
     for (String p in patterns) {
-      connection.patternListeners.remove(p);
+      List<RedisSubscriber>? list = connection.patternListeners[p];
+      if (list == null) continue;
+      list.removeWhere(before[p]!.contains);
+      if (list.isEmpty) connection.patternListeners.remove(p);
     }
     _resetClientTypeIfNoSubscription();
   }

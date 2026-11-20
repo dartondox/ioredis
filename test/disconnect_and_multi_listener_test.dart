@@ -255,6 +255,34 @@ void main() {
       expect(sub.redisClientType, RedisType.normal);
     });
 
+    test(
+      'punsubscribe, then psubscribe before it ends: the new one stays',
+      () async {
+        Redis sub = testClient();
+        Redis pub = testClient();
+        String pattern = '${uniquePrefix('prepsub')}.*';
+        RedisSubscriber old = await sub.psubscribe(pattern);
+        Future<void> u = sub.punsubscribe(pattern);
+        Future<RedisSubscriber> s = sub.psubscribe(pattern);
+        await u;
+        RedisSubscriber again = await s;
+        List<String?> gotOld = <String?>[];
+        Completer<String?> got = Completer<String?>();
+        old.onPatternMessage = (String p, String c, String? m) => gotOld.add(m);
+        again.onPatternMessage = (String p, String c, String? m) =>
+            got.complete(m);
+        expect(sub.redisClientType, RedisType.subscriber);
+        expect(sub.connection.patternListeners[pattern], <RedisSubscriber>[
+          again,
+        ]);
+        expect(await pub.publish(pattern.replaceAll('*', 'x'), 'hi'), 1);
+        expect(await got.future.timeout(const Duration(seconds: 3)), 'hi');
+        // The next command gets its own reply, not the message.
+        expect(await sub.ping(), 'PONG');
+        expect(gotOld, isEmpty);
+      },
+    );
+
     test('after a reconnect both get the message, each once', () async {
       Redis sub = Redis(testOptions()..onError = (dynamic e) {});
       addTearDown(sub.quit);

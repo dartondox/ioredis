@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ioredis/ioredis.dart';
+import 'package:ioredis/src/redis_response.dart';
 import 'package:test/test.dart';
 
 import 'helpers.dart';
@@ -488,11 +489,48 @@ void main() {
       expect(() => pub.publish('x', <int>[1, 2]), throwsArgumentError);
     });
 
+    test('a list that looks like a message is a normal reply', () async {
+      Redis redis = prefixedClient('msglist');
+      await redis.rpush('l', <String>['message', 'a', 'b']);
+      expect(await redis.lrange('l', 0, -1), <String>['message', 'a', 'b']);
+      await redis.rpush('p', <String>['pmessage', 'a', 'b', 'c']);
+      expect(await redis.lrange('p', 0, -1), <String>[
+        'pmessage',
+        'a',
+        'b',
+        'c',
+      ]);
+    });
+
+    test(
+      'unsubscribe, then subscribe before it ends: the new one stays',
+      () async {
+        Redis sub = testClient();
+        Redis pub = testClient();
+        String channel = uniquePrefix('resub');
+        await sub.subscribe(channel);
+        Future<void> u = sub.unsubscribe(channel);
+        Future<RedisSubscriber> s = sub.subscribe(channel);
+        await u;
+        RedisSubscriber again = await s;
+        Completer<String?> got = Completer<String?>();
+        again.onMessage = (String c, String? m) => got.complete(m);
+        expect(sub.redisClientType, RedisType.subscriber);
+        expect(sub.connection.subscribeListeners.values, <RedisSubscriber>[
+          again,
+        ]);
+        expect(await pub.publish(channel, 'hi'), 1);
+        expect(await got.future.timeout(const Duration(seconds: 3)), 'hi');
+        expect(await sub.ping(), 'PONG');
+      },
+    );
+
     test('ping works in subscriber mode, the same as normal mode', () async {
       Redis sub = testClient();
       await sub.subscribe(uniquePrefix('pingsub'));
       expect(await sub.ping(), 'PONG');
       expect(await sub.ping('hi'), 'hi');
+      expect(await sub.ping(''), '');
       await sub.psubscribe('${uniquePrefix('pingpsub')}.*');
       expect(await sub.ping(), 'PONG');
     });

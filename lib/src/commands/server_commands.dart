@@ -23,7 +23,11 @@ mixin _ServerCommands on _RedisBase {
   /// String pong = await redis.ping();
   /// ```
   Future<String> ping([String? message]) async {
-    return await sendCommand(<String>['PING', ?message]);
+    dynamic reply = await sendCommand(<String>['PING', ?message]);
+    // In subscriber mode Redis answers ["pong", message]. Give the same
+    // result as in normal mode: 'PONG', or the message.
+    if (reply is List) return message ?? 'PONG';
+    return reply;
   }
 
   /// Returns the message.

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ioredis/ioredis.dart';
+import 'package:ioredis/src/redis_response.dart';
 import 'package:test/test.dart';
 
 import 'helpers.dart';
@@ -196,5 +197,125 @@ void main() {
         expect(errors.single, isA<StateError>());
       },
     );
+  });
+
+  group('two subscribers on one pattern |', () {
+    test('both get the message, each once', () async {
+      Redis sub = testClient();
+      Redis pub = testClient();
+      String pattern = '${uniquePrefix('pmulti')}.*';
+      RedisSubscriber a = await sub.psubscribe(pattern);
+      // The same pattern twice in one call adds the subscriber once.
+      RedisSubscriber b = await sub.psubscribe(<String>[pattern, pattern]);
+      List<String?> gotA = <String?>[];
+      List<String?> gotB = <String?>[];
+      a.onPatternMessage = (String p, String c, String? m) => gotA.add(m);
+      b.onPatternMessage = (String p, String c, String? m) => gotB.add(m);
+
+      expect(await pub.publish(pattern.replaceAll('*', 'x'), 'hello'), 1);
+      expect(await sub.ping(), 'PONG');
+      expect(gotA, <String?>['hello']);
+      expect(gotB, <String?>['hello']);
+      expect(sub.connection.patternListeners[pattern], <RedisSubscriber>[a, b]);
+    });
+
+    test('a callback that throws does not stop the other one', () async {
+      List<Object> errors = <Object>[];
+      Redis sub = Redis(
+        RedisOptions(
+          host: redisHost,
+          port: redisPort,
+          onError: (dynamic e) => errors.add(e as Object),
+        ),
+      );
+      addTearDown(sub.quit);
+      Redis pub = testClient();
+      String pattern = '${uniquePrefix('pmthrows')}.*';
+      RedisSubscriber a = await sub.psubscribe(pattern);
+      RedisSubscriber b = await sub.psubscribe(pattern);
+      Completer<String?> gotB = Completer<String?>();
+      a.onPatternMessage = (String p, String c, String? m) =>
+          throw StateError('boom');
+      b.onPatternMessage = (String p, String c, String? m) => gotB.complete(m);
+
+      await pub.publish(pattern.replaceAll('*', 'x'), 'hello');
+
+      expect(await gotB.future.timeout(const Duration(seconds: 3)), 'hello');
+      expect(errors, hasLength(1));
+      expect(errors.single, isA<StateError>());
+    });
+
+    test('punsubscribe removes all subscribers of the pattern', () async {
+      Redis sub = testClient();
+      String pattern = '${uniquePrefix('pmunsub')}.*';
+      await sub.psubscribe(pattern);
+      await sub.psubscribe(pattern);
+      await sub.punsubscribe(pattern);
+      expect(sub.connection.patternListeners, isEmpty);
+      expect(sub.redisClientType, RedisType.normal);
+    });
+
+    test(
+      'punsubscribe, then psubscribe before it ends: the new one stays',
+      () async {
+        Redis sub = testClient();
+        Redis pub = testClient();
+        String pattern = '${uniquePrefix('prepsub')}.*';
+        RedisSubscriber old = await sub.psubscribe(pattern);
+        Future<void> u = sub.punsubscribe(pattern);
+        Future<RedisSubscriber> s = sub.psubscribe(pattern);
+        await u;
+        RedisSubscriber again = await s;
+        List<String?> gotOld = <String?>[];
+        Completer<String?> got = Completer<String?>();
+        old.onPatternMessage = (String p, String c, String? m) => gotOld.add(m);
+        again.onPatternMessage = (String p, String c, String? m) =>
+            got.complete(m);
+        expect(sub.redisClientType, RedisType.subscriber);
+        expect(sub.connection.patternListeners[pattern], <RedisSubscriber>[
+          again,
+        ]);
+        expect(await pub.publish(pattern.replaceAll('*', 'x'), 'hi'), 1);
+        expect(await got.future.timeout(const Duration(seconds: 3)), 'hi');
+        // The next command gets its own reply, not the message.
+        expect(await sub.ping(), 'PONG');
+        expect(gotOld, isEmpty);
+      },
+    );
+
+    test('after a reconnect both get the message, each once', () async {
+      Redis sub = Redis(testOptions()..onError = (dynamic e) {});
+      addTearDown(sub.quit);
+      Redis pub = testClient();
+      int id = await sub.call('CLIENT', <Object>['ID']);
+      String pattern = '${uniquePrefix('pmreconnect')}.*';
+      String channel = pattern.replaceAll('*', 'x');
+      RedisSubscriber a = await sub.psubscribe(pattern);
+      RedisSubscriber b = await sub.psubscribe(pattern);
+      List<String?> gotA = <String?>[];
+      List<String?> gotB = <String?>[];
+      a.onPatternMessage = (String p, String c, String? m) => gotA.add(m);
+      b.onPatternMessage = (String p, String c, String? m) => gotB.add(m);
+
+      await pub.call('CLIENT', <Object>['KILL', 'ID', id]);
+      // Wait until the client is subscribed again.
+      for (int i = 0; i < 100; i++) {
+        if (await pub.publish(channel, 'wait') == 1) break;
+        await Future<void>.delayed(Duration(milliseconds: 20));
+      }
+      for (int i = 0; i < 100 && (gotA.isEmpty || gotB.isEmpty); i++) {
+        await Future<void>.delayed(Duration(milliseconds: 20));
+      }
+      gotA.clear();
+      gotB.clear();
+
+      expect(await pub.publish(channel, 'hello'), 1);
+      for (int i = 0; i < 100 && (gotA.isEmpty || gotB.isEmpty); i++) {
+        await Future<void>.delayed(Duration(milliseconds: 20));
+      }
+      await Future<void>.delayed(Duration(milliseconds: 100));
+      expect(gotA, <String?>['hello']);
+      expect(gotB, <String?>['hello']);
+    });
   });
 }

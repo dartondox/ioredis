@@ -11,6 +11,24 @@
   hung forever when Redis sent back one error, like `NOPERM` for an ACL user
   without channel rights. Now they throw the `RedisError`, and the client goes
   back to normal mode.
+- Fix: two `psubscribe()` calls on the same pattern gave messages to the last
+  one only. The first one silently stopped getting them. Now every subscriber
+  of the pattern gets the message, once. A failed `psubscribe()` removes only
+  its own subscriber. `punsubscribe()` still removes all subscribers of the
+  pattern.
+- Breaking: `RedisConnection.patternListeners` changed type from
+  `Map<String, RedisSubscriber>` to `Map<String, List<RedisSubscriber>>`, so
+  one pattern can hold many subscribers.
+- Fix: `ping()` on a client in subscriber mode threw a type error, because
+  Redis answers `["pong", message]` there. Now it returns the same as in normal
+  mode: `PONG`, or the message you passed.
+- Fix: `unsubscribe()` or `punsubscribe()` followed by a new `subscribe()` or
+  `psubscribe()` before the first one ended removed the new subscriber too.
+  Redis stayed subscribed, but the client went back to normal mode, the new
+  subscriber got nothing, and later messages could be given to the next
+  command as its reply. Now only the subscribers that existed when the
+  unsubscribe started are removed. In subscriber mode, a message with no
+  listener is dropped, so it never becomes a command reply.
 
 ## 3.2.1
 

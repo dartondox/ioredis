@@ -88,9 +88,11 @@ class RedisConnection {
   final Map<List<String>, RedisSubscriber> subscribeListeners =
       <List<String>, RedisSubscriber>{};
 
-  /// Listeners of pattern subscribers, by pattern
-  final Map<String, RedisSubscriber> patternListeners =
-      <String, RedisSubscriber>{};
+  /// Listeners of pattern subscribers, by pattern. One pattern can have
+  /// many subscribers, in the order they were added. A pattern with no
+  /// subscribers is removed, never kept as an empty list.
+  final Map<String, List<RedisSubscriber>> patternListeners =
+      <String, List<RedisSubscriber>>{};
 
   /// True after the first connect worked. A later connect is a reconnect.
   bool _connectedBefore = false;
@@ -392,14 +394,19 @@ class RedisConnection {
   /// Returns true when the reply was a pub/sub message.
   /// With [keepBytes], the parts of the reply are bytes. Names are made
   /// `String` here, and the message stays bytes until a callback needs it.
+  /// Only in subscriber mode ([keepBytes] is on). It is on before
+  /// SUBSCRIBE or PSUBSCRIBE is sent and off only when no subscription is
+  /// left. Then Redis allows only pub/sub commands, PING and QUIT, and none
+  /// of their replies look like a message. In normal mode a reply like
+  /// LRANGE can be ['message', 'a', 'b'], so it is never taken there.
+  /// In subscriber mode a message with no listener is dropped, so it can
+  /// never become the reply of a waiting command.
   bool _dispatchPushMessage(List<dynamic> reply) {
-    if (reply.isEmpty) return false;
+    if (reply.isEmpty || !_keepBytes) return false;
     dynamic kind = reply[0];
     if (kind is Uint8List) kind = _text(kind);
 
-    if (kind == 'message' &&
-        reply.length == 3 &&
-        subscribeListeners.isNotEmpty) {
+    if (kind == 'message' && reply.length == 3) {
       String channel = _text(reply[1]);
       dynamic message = reply[2];
       for (RedisSubscriber cb in _findSubscribeListeners(channel)) {
@@ -419,31 +426,34 @@ class RedisConnection {
       return true;
     }
 
-    if (kind == 'pmessage' &&
-        reply.length == 4 &&
-        patternListeners.isNotEmpty) {
+    if (kind == 'pmessage' && reply.length == 4) {
       String pattern = _text(reply[1]);
       String channel = _text(reply[2]);
-      RedisSubscriber? cb = patternListeners[pattern];
-      if (cb == null) return true;
+      List<RedisSubscriber>? listeners = patternListeners[pattern];
+      if (listeners == null) return true;
       dynamic message = reply[3];
-      try {
-        if (cb.onPatternMessageBytes != null) {
-          cb.onPatternMessageBytes!(pattern, channel, _bytes(message));
-        } else {
-          cb.onMessageBytes?.call(channel, _bytes(message));
+      // A copy, so a callback can psubscribe or punsubscribe safely.
+      for (RedisSubscriber cb in List<RedisSubscriber>.of(listeners)) {
+        /// One callback that throws must not stop the other callbacks.
+        /// Its error goes to onError.
+        try {
+          if (cb.onPatternMessageBytes != null) {
+            cb.onPatternMessageBytes!(pattern, channel, _bytes(message));
+          } else {
+            cb.onMessageBytes?.call(channel, _bytes(message));
+          }
+        } catch (error) {
+          _throwSafeError(error);
         }
-      } catch (error) {
-        _throwSafeError(error);
-      }
-      try {
-        if (cb.onPatternMessage != null) {
-          cb.onPatternMessage!(pattern, channel, _textOrNull(message));
-        } else {
-          cb.onMessage?.call(channel, _textOrNull(message));
+        try {
+          if (cb.onPatternMessage != null) {
+            cb.onPatternMessage!(pattern, channel, _textOrNull(message));
+          } else {
+            cb.onMessage?.call(channel, _textOrNull(message));
+          }
+        } catch (error) {
+          _throwSafeError(error);
         }
-      } catch (error) {
-        _throwSafeError(error);
       }
       return true;
     }

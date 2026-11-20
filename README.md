@@ -2,8 +2,6 @@
 
 Redis client for dart.
 
-> 3.0.0 has breaking changes from 1.x. See [CHANGELOG.md](CHANGELOG.md).
-
 ## Install
 
 ```yaml

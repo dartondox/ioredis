@@ -1,5 +1,10 @@
 ## Unreleased
 
+- Fix: `disconnect()` during a running connect left the socket open. The
+  process did not exit, and the next command failed with `Bad state: Stream
+  has already been listened to`. Now the socket is closed when it arrives.
+- Fix: two `subscribe()` calls on the same channel gave messages to the first
+  one only. Now every subscriber of the channel gets the message.
 - Fix: `subscribe(['a', 'b'])` and `psubscribe([...])` with more than one name
   hung forever when Redis sent back one error, like `NOPERM` for an ACL user
   without channel rights. Now they throw the `RedisError`, and the client goes

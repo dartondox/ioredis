@@ -235,7 +235,7 @@ void main() {
         // Add a channel that is not allowed to the same List.
         channels.add('$name:no');
         await expectLater(user.subscribe(channels), throwsA(isA<RedisError>()));
-        expect(user.connection.subscribeListeners[channels], same(s));
+        expect(user.connection.subscribeListeners.values.single, same(s));
         expect(await admin.publish('$name.ok5', 'hi'), 1);
         expect(await got.future.timeout(Duration(seconds: 2)), 'hi');
       },
@@ -297,7 +297,7 @@ void main() {
         Future<RedisSubscriber> b = user.subscribe(channels);
         await expectLater(a, throwsA(isA<RedisError>()));
         await expectLater(b, throwsA(isA<RedisError>()));
-        expect(user.connection.subscribeListeners[channels], same(first));
+        expect(user.connection.subscribeListeners.values.single, same(first));
         expect(user.connection.subscribeListeners.length, 1);
       },
       timeout: Timeout(Duration(seconds: 5)),

@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Fix: two `subscribe(list)` calls with the same `List` (for example a `const`
+  list) dropped the first subscriber. `subscribe` now copies the list.
+- Fix: a `subscribe` or `psubscribe` callback that is `async` and throws
+  ended the process. Its error now goes to `onError`, like a sync throw.
 - Fix: `disconnect()` during a running connect left the socket open. The
   process did not exit, and the next command failed with `Bad state: Stream
   has already been listened to`. Now the socket is closed when it arrives.

@@ -413,12 +413,12 @@ class RedisConnection {
         /// One callback that throws must not stop the other callbacks.
         /// Its error goes to onError.
         try {
-          cb.onMessageBytes?.call(channel, _bytes(message));
+          _guard(cb.onMessageBytes?.call(channel, _bytes(message)));
         } catch (error) {
           _throwSafeError(error);
         }
         try {
-          cb.onMessage?.call(channel, _textOrNull(message));
+          _guard(cb.onMessage?.call(channel, _textOrNull(message)));
         } catch (error) {
           _throwSafeError(error);
         }
@@ -438,18 +438,22 @@ class RedisConnection {
         /// Its error goes to onError.
         try {
           if (cb.onPatternMessageBytes != null) {
-            cb.onPatternMessageBytes!(pattern, channel, _bytes(message));
+            _guard(
+              cb.onPatternMessageBytes!(pattern, channel, _bytes(message)),
+            );
           } else {
-            cb.onMessageBytes?.call(channel, _bytes(message));
+            _guard(cb.onMessageBytes?.call(channel, _bytes(message)));
           }
         } catch (error) {
           _throwSafeError(error);
         }
         try {
           if (cb.onPatternMessage != null) {
-            cb.onPatternMessage!(pattern, channel, _textOrNull(message));
+            _guard(
+              cb.onPatternMessage!(pattern, channel, _textOrNull(message)),
+            );
           } else {
-            cb.onMessage?.call(channel, _textOrNull(message));
+            _guard(cb.onMessage?.call(channel, _textOrNull(message)));
           }
         } catch (error) {
           _throwSafeError(error);
@@ -458,6 +462,13 @@ class RedisConnection {
       return true;
     }
     return false;
+  }
+
+  /// An async callback that throws gives a failed Future. Send that error
+  /// to onError too, or it ends the process as an unhandled error.
+  void _guard(void result) {
+    Object? value = result as Object?;
+    if (value is Future) unawaited(value.catchError(_throwSafeError));
   }
 
   /// Decode bytes as UTF-8. Bad bytes become U+FFFD, it never throws.

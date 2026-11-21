@@ -1,4 +1,4 @@
-## Unreleased
+## 3.2.2
 
 - Fix: two `subscribe(list)` calls with the same `List` (for example a `const`
   list) dropped the first subscriber. `subscribe` now copies the list.
